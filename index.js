@@ -13,9 +13,11 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!TOKEN || !ADMIN_ID || !DATABASE_URL) {
   console.error("❌ Missing environment variables.");
+
   if (!TOKEN) console.error("TELEGRAM_BOT_TOKEN is missing");
   if (!ADMIN_ID) console.error("ADMIN_TELEGRAM_ID is missing");
   if (!DATABASE_URL) console.error("DATABASE_URL is missing");
+
   process.exit(1);
 }
 
@@ -23,7 +25,9 @@ if (!TOKEN || !ADMIN_ID || !DATABASE_URL) {
 // 2. TELEGRAM BOT
 // ==========================================
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+const bot = new TelegramBot(TOKEN, {
+  polling: true
+});
 
 // ==========================================
 // 3. DATABASE
@@ -31,7 +35,9 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 async function initializeDatabase() {
@@ -52,27 +58,11 @@ async function initializeDatabase() {
     )
   `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS booking_admin_actions (
-      id SERIAL PRIMARY KEY,
-      admin_telegram_id BIGINT NOT NULL,
-      action VARCHAR(100) NOT NULL,
-      target VARCHAR(100),
-      affected_count INTEGER DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS bookings_user_id_idx
-    ON bookings (telegram_user_id)
-  `);
-
   console.log("✅ Database initialized");
 }
 
-const databaseReady = initializeDatabase().catch(error => {
-  console.error("❌ Database initialization failed:", error);
+const databaseReady = initializeDatabase().catch((error) => {
+  console.error("❌ Database initialization failed:", error.message);
   process.exit(1);
 });
 
@@ -83,7 +73,10 @@ const databaseReady = initializeDatabase().catch(error => {
 const PORT = process.env.PORT || 3000;
 
 http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.writeHead(200, {
+    "Content-Type": "text/plain"
+  });
+
   res.end("🚤 MSB Automatic Ticket is running!");
 }).listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
@@ -143,26 +136,25 @@ const schedules = {
 };
 
 // ==========================================
-// 6. SESSIONS AND HELPERS
+// 6. BOOKING SESSIONS
 // ==========================================
 
 const sessions = new Map();
+const submittingBookings = new Set();
 
 function generateBookingId() {
   return `MSB-${Math.floor(100000 + Math.random() * 900000)}`;
 }
 
-function isAdmin(userId, chatId) {
-  return (
-    String(userId) === String(ADMIN_ID) &&
-    String(chatId) === String(ADMIN_ID)
-  );
-}
+// ==========================================
+// 7. DATE FUNCTIONS
+// ==========================================
 
 function formatDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
+
   return `${year}-${month}-${day}`;
 }
 
@@ -195,591 +187,78 @@ function generateDates() {
       label = `📅 ${date.getDate()} ${date.toLocaleString("en", { month: "short" })}`;
     }
 
-    dates.push({ value: formatDate(date), label });
+    dates.push({
+      value: formatDate(date),
+      label
+    });
   }
 
   return dates;
 }
 
-function getDateValue(value) {
-  return value instanceof Date
-    ? value.toISOString().split("T")[0]
-    : String(value).split("T")[0];
-}
-
-async function editScreen(chatId, messageId, text, keyboard) {
-  await bot.editMessageText(text, {
-    chat_id: chatId,
-    message_id: messageId,
-    reply_markup: { inline_keyboard: keyboard }
-  });
-}
-
-async function logAdminAction(action, target, count) {
-  await pool.query(
-    `INSERT INTO booking_admin_actions
-     (admin_telegram_id, action, target, affected_count)
-     VALUES ($1, $2, $3, $4)`,
-    [ADMIN_ID, action, target || null, count || 0]
-  );
-}
-
 // ==========================================
-// 7. MAIN MENU
+// 8. MAIN MENU
 // ==========================================
 
 async function showMainMenu(chatId, messageId = null) {
-  const keyboard = [
-    [{ text: "🎫 Book Ticket", callback_data: "book" }],
-    [{ text: "📋 Schedule", callback_data: "schedule" }],
-    [{ text: "🎟️ My Tickets", callback_data: "tickets" }],
-    [{ text: "ℹ️ Help", callback_data: "help" }]
-  ];
-
-  if (String(chatId) === String(ADMIN_ID)) {
-    keyboard.push([
-      { text: "⚙️ Admin Dashboard", callback_data: "admin_dashboard" }
-    ]);
-  }
-
   const text =
     "🚤 MSB AUTOMATIC TICKET\n\n" +
     "🇲🇻 Maldives Speedboat Booking\n\n" +
     "Choose an option below:";
 
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🎫 Book Ticket", callback_data: "book" }],
+        [{ text: "📋 Schedule", callback_data: "schedule" }],
+        [{ text: "🎟️ My Tickets", callback_data: "tickets" }],
+        [{ text: "ℹ️ Help", callback_data: "help" }]
+      ]
+    }
+  };
+
   if (messageId) {
-    await editScreen(chatId, messageId, text, keyboard);
-  } else {
-    await bot.sendMessage(chatId, text, {
-      reply_markup: { inline_keyboard: keyboard }
+    await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: messageId,
+      ...options
     });
+  } else {
+    await bot.sendMessage(chatId, text, options);
   }
 }
 
 // ==========================================
-// 8. ADMIN DASHBOARD
+// 9. START COMMAND
 // ==========================================
 
-async function showAdminDashboard(chatId, messageId) {
-  await databaseReady;
-
-  const result = await pool.query(`
-    SELECT
-      COUNT(*)::int AS total,
-      COUNT(*) FILTER (
-        WHERE status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-      )::int AS active,
-      COUNT(*) FILTER (
-        WHERE status = 'CONFIRMED'
-      )::int AS confirmed,
-      COUNT(*) FILTER (
-        WHERE status = 'PENDING_SEAT_CONFIRMATION'
-      )::int AS pending,
-      COUNT(DISTINCT telegram_user_id)::int AS customers
-    FROM bookings
-  `);
-
-  const stats = result.rows[0];
-
-  const text =
-    "⚙️ MSB ADMIN DASHBOARD\n\n" +
-    `📚 Total stored bookings: ${stats.total}\n` +
-    `👥 Total customers: ${stats.customers}\n` +
-    `🟢 Active bookings: ${stats.active}\n` +
-    `✅ Confirmed bookings: ${stats.confirmed}\n` +
-    `⏳ Pending bookings: ${stats.pending}\n\n` +
-    "Select an admin option:";
-
-  await editScreen(chatId, messageId, text, [
-    [{ text: "👥 Customer Booking Overview", callback_data: "admin_customers_0" }],
-    [{ text: "📋 All Active Bookings", callback_data: "admin_all_bookings" }],
-    [{ text: "🗑 Remove Customer Bookings", callback_data: "admin_choose_remove" }],
-    [{ text: "🚨 Remove ALL Customer Bookings", callback_data: "admin_global_confirm" }],
-    [{ text: "🏠 Main Menu", callback_data: "menu" }]
-  ]);
-}
-
-// ==========================================
-// 9. ADMIN CUSTOMER OVERVIEW
-// ==========================================
-
-async function showAdminCustomers(chatId, messageId, page = 0) {
-  await databaseReady;
-
-  const limit = 10;
-  const offset = page * limit;
-
-  const result = await pool.query(
-    `
-    SELECT
-      telegram_user_id::text AS user_id,
-      MAX(passenger_name) AS passenger_name,
-      MAX(phone) AS phone,
-      COUNT(*)::int AS total,
-      COUNT(*) FILTER (
-        WHERE status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-      )::int AS active
-    FROM bookings
-    GROUP BY telegram_user_id
-    ORDER BY MAX(created_at) DESC
-    LIMIT $1 OFFSET $2
-    `,
-    [limit, offset]
-  );
-
-  const buttons = result.rows.map(customer => [{
-    text: `👤 ${customer.passenger_name || "Customer"} — ${customer.total} bookings`,
-    callback_data: `admin_customer_${customer.user_id}`
-  }]);
-
-  if (page > 0) {
-    buttons.push([{
-      text: "⬅️ Previous",
-      callback_data: `admin_customers_${page - 1}`
-    }]);
-  }
-
-  if (result.rows.length === limit) {
-    buttons.push([{
-      text: "Next ➡️",
-      callback_data: `admin_customers_${page + 1}`
-    }]);
-  }
-
-  buttons.push([{
-    text: "🔙 Admin Dashboard",
-    callback_data: "admin_dashboard"
-  }]);
-
-  await editScreen(
-    chatId,
-    messageId,
-    `👥 CUSTOMER BOOKING OVERVIEW\n\nPage ${page + 1}\n\nSelect a customer to view their bookings:`,
-    buttons
-  );
-}
-
-// ==========================================
-// 10. ADMIN CUSTOMER DETAILS
-// ==========================================
-
-async function showAdminCustomer(chatId, messageId, userId) {
-  await databaseReady;
-
-  const result = await pool.query(
-    `
-    SELECT
-      booking_id,
-      passenger_name,
-      phone,
-      route,
-      travel_date,
-      departure_time,
-      operator,
-      passenger_count,
-      status,
-      created_at
-    FROM bookings
-    WHERE telegram_user_id = $1
-    ORDER BY created_at DESC
-    `,
-    [userId]
-  );
-
-  if (result.rows.length === 0) {
-    await editScreen(chatId, messageId,
-      "No bookings found for this customer.",
-      [[{ text: "🔙 Customers", callback_data: "admin_customers_0" }]]
-    );
-    return;
-  }
-
-  const customer = result.rows[0];
-
-  const active = result.rows.filter(
-    row => !["CUSTOMER_CANCELLED", "ADMIN_REMOVED"].includes(row.status)
-  ).length;
-
-  let text =
-    "👤 CUSTOMER DETAILS\n\n" +
-    `🆔 Telegram ID: ${userId}\n` +
-    `👤 Name: ${customer.passenger_name}\n` +
-    `📱 Phone: ${customer.phone}\n` +
-    `📚 Total bookings: ${result.rows.length}\n` +
-    `🟢 Active bookings: ${active}\n\n` +
-    "📋 BOOKING HISTORY\n\n";
-
-  const buttons = [];
-
-  result.rows.slice(0, 8).forEach(booking => {
-    const date = getDateValue(booking.travel_date);
-
-    text +=
-      `🎫 ${booking.booking_id}\n` +
-      `📅 ${displayDate(date)}\n` +
-      `📍 ${booking.route}\n` +
-      `🕐 ${booking.departure_time}\n` +
-      `📌 ${booking.status}\n\n`;
-
-    if (!["CUSTOMER_CANCELLED", "ADMIN_REMOVED"].includes(booking.status)) {
-      buttons.push([{
-        text: `🗑 Remove ${booking.booking_id}`,
-        callback_data: `admin_remove_${booking.booking_id}`
-      }]);
-    }
-  });
-
-  buttons.push([{
-    text: "🗑 Remove ALL This Customer's Bookings",
-    callback_data: `admin_remove_customer_${userId}`
-  }]);
-
-  buttons.push([{
-    text: "🔙 Customer Overview",
-    callback_data: "admin_customers_0"
-  }]);
-
-  await editScreen(chatId, messageId, text, buttons);
-}
-
-// ==========================================
-// 11. ADMIN ALL ACTIVE BOOKINGS
-// ==========================================
-
-async function showAdminAllBookings(chatId, messageId) {
-  await databaseReady;
-
-  const result = await pool.query(`
-    SELECT booking_id, telegram_user_id, passenger_name,
-           route, travel_date, departure_time, status
-    FROM bookings
-    WHERE status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-    ORDER BY created_at DESC
-    LIMIT 20
-  `);
-
-  if (!result.rows.length) {
-    await editScreen(chatId, messageId,
-      "📋 No active bookings found.",
-      [[{ text: "🔙 Admin Dashboard", callback_data: "admin_dashboard" }]]
-    );
-    return;
-  }
-
-  let text = "📋 ACTIVE BOOKINGS\n\n";
-  const buttons = [];
-
-  result.rows.forEach(booking => {
-    text +=
-      `🎫 ${booking.booking_id}\n` +
-      `👤 ${booking.passenger_name}\n` +
-      `🆔 ${booking.telegram_user_id}\n` +
-      `📅 ${displayDate(getDateValue(booking.travel_date))}\n` +
-      `📍 ${booking.route}\n` +
-      `📌 ${booking.status}\n\n`;
-
-    buttons.push([{
-      text: `🗑 Remove ${booking.booking_id}`,
-      callback_data: `admin_remove_${booking.booking_id}`
-    }]);
-  });
-
-  buttons.push([{
-    text: "🔙 Admin Dashboard",
-    callback_data: "admin_dashboard"
-  }]);
-
-  await editScreen(chatId, messageId, text, buttons);
-}
-
-// ==========================================
-// 12. ADMIN REMOVE CUSTOMER BOOKINGS MENU
-// ==========================================
-
-async function showRemoveCustomerMenu(chatId, messageId) {
-  await databaseReady;
-
-  const result = await pool.query(`
-    SELECT telegram_user_id::text AS user_id,
-           MAX(passenger_name) AS passenger_name,
-           COUNT(*) FILTER (
-             WHERE status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-           )::int AS active
-    FROM bookings
-    GROUP BY telegram_user_id
-    HAVING COUNT(*) FILTER (
-      WHERE status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-    ) > 0
-    ORDER BY MAX(created_at) DESC
-    LIMIT 20
-  `);
-
-  const buttons = result.rows.map(customer => [{
-    text: `🗑 ${customer.passenger_name} (${customer.active})`,
-    callback_data: `admin_remove_customer_${customer.user_id}`
-  }]);
-
-  buttons.push([{
-    text: "🔙 Admin Dashboard",
-    callback_data: "admin_dashboard"
-  }]);
-
-  await editScreen(
-    chatId,
-    messageId,
-    "🗑 REMOVE CUSTOMER BOOKINGS\n\nSelect a customer to remove all their active bookings:",
-    buttons
-  );
-}
-
-// ==========================================
-// 13. ADMIN BULK REMOVAL
-// ==========================================
-
-async function removeCustomerBookings(chatId, messageId, userId) {
-  await databaseReady;
-
-  const result = await pool.query(
-    `
-    UPDATE bookings
-    SET status = 'ADMIN_REMOVED'
-    WHERE telegram_user_id = $1
-    AND status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-    RETURNING booking_id
-    `,
-    [userId]
-  );
-
-  await logAdminAction("REMOVE_CUSTOMER_BOOKINGS", userId, result.rowCount);
-
+bot.onText(/^\/start$/, async (msg) => {
   try {
-    await bot.sendMessage(
-      userId,
-      "⚠️ BOOKING UPDATE\n\n" +
-      "Your active MSB booking(s) have been removed by the booking administrator.\n\n" +
-      "Please contact the booking team if you need assistance."
-    );
+    sessions.delete(msg.chat.id);
+    await showMainMenu(msg.chat.id);
   } catch (error) {
-    console.log("Customer notification failed:", error.message);
+    console.error("Start error:", error.message);
   }
-
-  await editScreen(
-    chatId,
-    messageId,
-    `✅ CUSTOMER BOOKINGS REMOVED\n\nCustomer ID: ${userId}\nBookings removed: ${result.rowCount}\n\nBooking records have been retained for history.`,
-    [[{ text: "🔙 Admin Dashboard", callback_data: "admin_dashboard" }]]
-  );
-}
-
-async function showGlobalRemovalConfirmation(chatId, messageId) {
-  await editScreen(
-    chatId,
-    messageId,
-    "🚨 WARNING — GLOBAL BOOKING REMOVAL\n\n" +
-    "You are about to remove ALL active bookings belonging to ALL customers.\n\n" +
-    "This action will:\n" +
-    "• Mark active bookings as ADMIN_REMOVED.\n" +
-    "• Keep the booking records in the database.\n" +
-    "• Preserve already cancelled or removed records.\n\n" +
-    "Are you absolutely sure?",
-    [
-      [{ text: "🚨 YES, REMOVE ALL ACTIVE BOOKINGS", callback_data: "admin_global_execute" }],
-      [{ text: "❌ No, Go Back", callback_data: "admin_dashboard" }]
-    ]
-  );
-}
-
-async function removeAllBookings(chatId, messageId) {
-  await databaseReady;
-
-  const result = await pool.query(`
-    UPDATE bookings
-    SET status = 'ADMIN_REMOVED'
-    WHERE status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-    RETURNING booking_id, telegram_user_id
-  `);
-
-  await logAdminAction("REMOVE_ALL_ACTIVE_BOOKINGS", "ALL_CUSTOMERS", result.rowCount);
-
-  const customerIds = [
-    ...new Set(result.rows.map(row => String(row.telegram_user_id)))
-  ];
-
-  for (const userId of customerIds) {
-    try {
-      await bot.sendMessage(
-        userId,
-        "⚠️ BOOKING UPDATE\n\n" +
-        "Your active MSB booking(s) have been removed by the booking administrator.\n\n" +
-        "Please contact the booking team if you need assistance."
-      );
-    } catch (error) {
-      console.log(`Notification failed for ${userId}:`, error.message);
-    }
-  }
-
-  await editScreen(
-    chatId,
-    messageId,
-    `✅ GLOBAL REMOVAL COMPLETED\n\nBookings removed: ${result.rowCount}\nCustomers notified: ${customerIds.length}\n\nAll booking records have been retained for history.`,
-    [[{ text: "🔙 Admin Dashboard", callback_data: "admin_dashboard" }]]
-  );
-}
+});
 
 // ==========================================
-// 14. CUSTOMER CANCELLATION
-// ==========================================
-
-async function showCustomerCancellation(chatId, messageId, bookingId) {
-  await databaseReady;
-
-  const result = await pool.query(
-    `
-    SELECT booking_id, status
-    FROM bookings
-    WHERE booking_id = $1
-    AND telegram_user_id = $2
-    `,
-    [bookingId, chatId]
-  );
-
-  if (!result.rows.length) {
-    await bot.answerCallbackQuery("", {
-      text: "Booking not found."
-    }).catch(() => {});
-    return;
-  }
-
-  const booking = result.rows[0];
-
-  if (!["PENDING_SEAT_CONFIRMATION", "CONFIRMED"].includes(booking.status)) {
-    await editScreen(
-      chatId,
-      messageId,
-      "⚠️ This booking cannot be cancelled.\n\nCurrent status: " + booking.status,
-      [[{ text: "🔙 My Tickets", callback_data: "tickets" }]]
-    );
-    return;
-  }
-
-  await editScreen(
-    chatId,
-    messageId,
-    `⚠️ CANCEL BOOKING?\n\nBooking ID: ${bookingId}\n\nAre you sure you want to cancel this booking?`,
-    [
-      [{ text: "❌ YES, CANCEL BOOKING", callback_data: `customer_cancel_${bookingId}` }],
-      [{ text: "🔙 Keep Booking", callback_data: "tickets" }]
-    ]
-  );
-}
-
-async function cancelCustomerBooking(chatId, messageId, bookingId) {
-  await databaseReady;
-
-  const result = await pool.query(
-    `
-    UPDATE bookings
-    SET status = 'CUSTOMER_CANCELLED'
-    WHERE booking_id = $1
-    AND telegram_user_id = $2
-    AND status IN ('PENDING_SEAT_CONFIRMATION', 'CONFIRMED')
-    RETURNING booking_id, telegram_user_id
-    `,
-    [bookingId, chatId]
-  );
-
-  if (!result.rows.length) {
-    await editScreen(
-      chatId,
-      messageId,
-      "⚠️ Booking could not be cancelled. It may already have been processed.",
-      [[{ text: "🔙 My Tickets", callback_data: "tickets" }]]
-    );
-    return;
-  }
-
-  try {
-    await bot.sendMessage(
-      ADMIN_ID,
-      "❌ CUSTOMER BOOKING CANCELLED\n\n" +
-      `🎫 Booking ID: ${bookingId}\n` +
-      `🆔 Customer ID: ${chatId}\n\n` +
-      "The customer cancelled this booking."
-    );
-  } catch (error) {
-    console.log("Admin notification failed:", error.message);
-  }
-
-  await editScreen(
-    chatId,
-    messageId,
-    `✅ BOOKING CANCELLED\n\nBooking ID: ${bookingId}\n\nYour booking has been cancelled successfully.`,
-    [
-      [{ text: "🎟️ My Tickets", callback_data: "tickets" }],
-      [{ text: "🏠 Main Menu", callback_data: "menu" }]
-    ]
-  );
-}
-
-// ==========================================
-// 15. ADMIN INDIVIDUAL REMOVAL
-// ==========================================
-
-async function adminRemoveSingleBooking(chatId, messageId, bookingId) {
-  await databaseReady;
-
-  const result = await pool.query(
-    `
-    UPDATE bookings
-    SET status = 'ADMIN_REMOVED'
-    WHERE booking_id = $1
-    AND status NOT IN ('CUSTOMER_CANCELLED', 'ADMIN_REMOVED')
-    RETURNING telegram_user_id
-    `,
-    [bookingId]
-  );
-
-  if (!result.rows.length) {
-    await editScreen(
-      chatId,
-      messageId,
-      "⚠️ Booking not found or already removed.",
-      [[{ text: "🔙 Admin Dashboard", callback_data: "admin_dashboard" }]]
-    );
-    return;
-  }
-
-  const customerId = result.rows[0].telegram_user_id;
-
-  await logAdminAction("REMOVE_SINGLE_BOOKING", bookingId, 1);
-
-  try {
-    await bot.sendMessage(
-      customerId,
-      `⚠️ BOOKING UPDATE\n\nYour booking ${bookingId} has been removed by the booking administrator.`
-    );
-  } catch (error) {
-    console.log("Customer notification failed:", error.message);
-  }
-
-  await editScreen(
-    chatId,
-    messageId,
-    `✅ BOOKING REMOVED\n\nBooking ID: ${bookingId}\n\nThe booking record has been retained for history.`,
-    [[{ text: "🔙 Admin Dashboard", callback_data: "admin_dashboard" }]]
-  );
-}
-
-// ==========================================
-// 16. ADMIN APPROVAL SYSTEM
+// 10. ADMIN APPROVAL SYSTEM
 // ==========================================
 
 async function handleAdminDecision(query, approved) {
-  const adminChatId = query.message.chat.id;
+  const adminChatId = query.message?.chat?.id;
 
-  if (!isAdmin(query.from.id, adminChatId)) {
+  if (String(query.from.id) !== String(ADMIN_ID)) {
     await bot.answerCallbackQuery(query.id, {
       text: "⛔ You are not authorized!",
+      show_alert: true
+    });
+    return;
+  }
+
+  if (String(adminChatId) !== String(ADMIN_ID)) {
+    await bot.answerCallbackQuery(query.id, {
+      text: "⛔ Invalid admin chat!",
       show_alert: true
     });
     return;
@@ -795,6 +274,11 @@ async function handleAdminDecision(query, approved) {
     });
     return;
   }
+
+  // Answer Telegram immediately
+  await bot.answerCallbackQuery(query.id, {
+    text: "Processing booking..."
+  });
 
   try {
     await databaseReady;
@@ -812,38 +296,30 @@ async function handleAdminDecision(query, approved) {
       [newStatus, bookingId]
     );
 
-    if (!result.rows.length) {
-      await bot.answerCallbackQuery(query.id, {
-        text: "⚠️ Already processed or booking not found!",
-        show_alert: true
-      });
+    if (result.rows.length === 0) {
+      await bot.sendMessage(
+        ADMIN_ID,
+        `⚠️ Booking ${bookingId} was already processed or could not be found.`
+      );
       return;
     }
 
     const booking = result.rows[0];
 
-    await bot.editMessageReplyMarkup(
-      { inline_keyboard: [] },
-      {
-        chat_id: adminChatId,
-        message_id: query.message.message_id
-      }
-    );
-
-    await bot.answerCallbackQuery(query.id, {
-      text: approved ? "✅ Booking confirmed!" : "❌ Booking rejected!"
-    });
-
-    const message = approved
-      ? `✅ BOOKING CONFIRMED!\n\n🎫 Booking ID: ${bookingId}\n\nYour seats have been confirmed.\n\nThank you for choosing MSB! 🚤`
-      : `❌ BOOKING REJECTED\n\n🎫 Booking ID: ${bookingId}\n\nUnfortunately, your booking could not be confirmed.\n\nPlease contact our booking team for assistance.`;
-
+    // Remove CONFIRM and REJECT buttons
     try {
-      await bot.sendMessage(booking.telegram_user_id, message);
+      await bot.editMessageReplyMarkup(
+        { inline_keyboard: [] },
+        {
+          chat_id: adminChatId,
+          message_id: query.message.message_id
+        }
+      );
     } catch (error) {
-      console.error("Customer notification error:", error.message);
+      console.error("Button removal error:", error.message);
     }
 
+    // Notify admin
     await bot.sendMessage(
       ADMIN_ID,
       approved
@@ -851,32 +327,61 @@ async function handleAdminDecision(query, approved) {
         : `❌ Booking ${bookingId} has been REJECTED.`
     );
 
+    // Notify customer separately
+    const customerMessage = approved
+      ? (
+          "✅ BOOKING CONFIRMED!\n\n" +
+          `🎫 Booking ID: ${bookingId}\n\n` +
+          "Your seats have been confirmed.\n\n" +
+          "Thank you for choosing MSB! 🚤"
+        )
+      : (
+          "❌ BOOKING REJECTED\n\n" +
+          `🎫 Booking ID: ${bookingId}\n\n` +
+          "Unfortunately, your booking could not be confirmed.\n\n" +
+          "Please contact our booking team for assistance."
+        );
+
+    try {
+      await bot.sendMessage(
+        booking.telegram_user_id,
+        customerMessage
+      );
+    } catch (notificationError) {
+      console.error(
+        "Customer decision notification error:",
+        notificationError.message
+      );
+
+      await bot.sendMessage(
+        ADMIN_ID,
+        `⚠️ Booking ${bookingId} was updated, but the customer could not be notified.`
+      );
+    }
+
   } catch (error) {
     console.error("Admin decision error:", error.message);
 
-    await bot.answerCallbackQuery(query.id, {
-      text: "❌ Unable to update booking!",
-      show_alert: true
-    }).catch(() => {});
+    try {
+      await bot.sendMessage(
+        ADMIN_ID,
+        `❌ Could not process booking ${bookingId}: ${error.message}`
+      );
+    } catch (_) {}
   }
 }
 
 // ==========================================
-// 17. CALLBACK HANDLER
+// 11. CALLBACK HANDLER
 // ==========================================
 
-bot.on("callback_query", async query => {
-  const chatId = query.message?.chat?.id;
-  const messageId = query.message?.message_id;
-  const data = query.data || "";
-
-  if (!chatId || !messageId) {
-    await bot.answerCallbackQuery(query.id).catch(() => {});
-    return;
-  }
-
+bot.on("callback_query", async (query) => {
   try {
-    // ADMIN APPROVALS
+    const chatId = query.message?.chat?.id;
+    const messageId = query.message?.message_id;
+    const data = query.data || "";
+
+    // ADMIN ACTIONS
     if (data.startsWith("admin_confirm_")) {
       await handleAdminDecision(query, true);
       return;
@@ -887,67 +392,8 @@ bot.on("callback_query", async query => {
       return;
     }
 
-    // PROTECT ALL OTHER ADMIN ACTIONS
-    if (data.startsWith("admin_")) {
-      if (!isAdmin(query.from.id, chatId)) {
-        await bot.answerCallbackQuery(query.id, {
-          text: "⛔ Admin access only!",
-          show_alert: true
-        });
-        return;
-      }
-
+    if (!chatId || !messageId) {
       await bot.answerCallbackQuery(query.id);
-
-      if (data === "admin_dashboard") {
-        await showAdminDashboard(chatId, messageId);
-        return;
-      }
-
-      if (data.startsWith("admin_customers_")) {
-        const page = Number(data.split("_").pop()) || 0;
-        await showAdminCustomers(chatId, messageId, page);
-        return;
-      }
-
-      if (data.startsWith("admin_customer_")) {
-        const userId = data.replace("admin_customer_", "");
-        await showAdminCustomer(chatId, messageId, userId);
-        return;
-      }
-
-      if (data === "admin_all_bookings") {
-        await showAdminAllBookings(chatId, messageId);
-        return;
-      }
-
-      if (data === "admin_choose_remove") {
-        await showRemoveCustomerMenu(chatId, messageId);
-        return;
-      }
-
-      if (data === "admin_global_confirm") {
-        await showGlobalRemovalConfirmation(chatId, messageId);
-        return;
-      }
-
-      if (data === "admin_global_execute") {
-        await removeAllBookings(chatId, messageId);
-        return;
-      }
-
-      if (data.startsWith("admin_remove_customer_")) {
-        const userId = data.replace("admin_remove_customer_", "");
-        await removeCustomerBookings(chatId, messageId, userId);
-        return;
-      }
-
-      if (data.startsWith("admin_remove_")) {
-        const bookingId = data.replace("admin_remove_", "");
-        await adminRemoveSingleBooking(chatId, messageId, bookingId);
-        return;
-      }
-
       return;
     }
 
@@ -964,40 +410,56 @@ bot.on("callback_query", async query => {
     if (data === "book") {
       sessions.set(chatId, { step: "route" });
 
-      await editScreen(chatId, messageId,
+      await bot.editMessageText(
         "🎫 BOOK A SPEEDBOAT TICKET\n\nSelect your route:",
-        [
-          [{ text: "🅰️ Maafushi → Malé", callback_data: "book_route_A" }],
-          [{ text: "🅱️ Malé → Maafushi", callback_data: "book_route_B" }],
-          [{ text: "🔙 Main Menu", callback_data: "menu" }]
-        ]
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🅰️ Maafushi → Malé", callback_data: "book_route_A" }],
+              [{ text: "🅱️ Malé → Maafushi", callback_data: "book_route_B" }],
+              [{ text: "🔙 Main Menu", callback_data: "menu" }]
+            ]
+          }
+        }
       );
       return;
     }
 
-    // ROUTE SELECTION
+    // ROUTE A AND B
     if (data === "book_route_A" || data === "book_route_B") {
       const routeA = data === "book_route_A";
       const session = sessions.get(chatId) || {};
 
-      session.route = routeA ? "Maafushi → Malé" : "Malé → Maafushi";
+      session.route = routeA
+        ? "Maafushi → Malé"
+        : "Malé → Maafushi";
+
       session.routeCode = routeA ? "A" : "B";
       session.step = "date";
 
       sessions.set(chatId, session);
 
-      const buttons = generateDates().map(date => [{
+      const dates = generateDates();
+
+      const buttons = dates.map((date) => [{
         text: date.label,
         callback_data: `book_date_${date.value}`
       }]);
 
-      buttons.push([{ text: "🔙 Back", callback_data: "book" }]);
+      buttons.push([{
+        text: "🔙 Back",
+        callback_data: "book"
+      }]);
 
-      await editScreen(
-        chatId,
-        messageId,
+      await bot.editMessageText(
         `${routeA ? "🅰️ MAAFUSHI → MALÉ" : "🅱️ MALÉ → MAAFUSHI"}\n\n📅 Select your travel date:`,
-        buttons
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: buttons }
+        }
       );
       return;
     }
@@ -1008,12 +470,16 @@ bot.on("callback_query", async query => {
       const session = sessions.get(chatId);
 
       if (!session) {
-        await bot.sendMessage(chatId, "⚠️ Your booking session expired. Please start again with /start.");
+        await bot.sendMessage(
+          chatId,
+          "⚠️ Your booking session expired. Please start again with /start."
+        );
         return;
       }
 
       session.travelDate = selectedDate;
       session.step = "departure";
+
       sessions.set(chatId, session);
 
       const schedule = session.routeCode === "A"
@@ -1027,14 +493,18 @@ bot.on("callback_query", async query => {
 
       buttons.push([{
         text: "🔙 Back",
-        callback_data: session.routeCode === "A" ? "book_route_A" : "book_route_B"
+        callback_data: session.routeCode === "A"
+          ? "book_route_A"
+          : "book_route_B"
       }]);
 
-      await editScreen(
-        chatId,
-        messageId,
+      await bot.editMessageText(
         `📅 ${displayDate(selectedDate)}\n\n🕐 Select your departure:`,
-        buttons
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: buttons }
+        }
       );
       return;
     }
@@ -1045,7 +515,10 @@ bot.on("callback_query", async query => {
       const session = sessions.get(chatId);
 
       if (!session) {
-        await bot.sendMessage(chatId, "⚠️ Your booking session expired. Please start again.");
+        await bot.sendMessage(
+          chatId,
+          "⚠️ Your booking session expired. Please start again."
+        );
         return;
       }
 
@@ -1056,16 +529,24 @@ bot.on("callback_query", async query => {
       const trip = schedule[index];
 
       if (!trip) {
-        await bot.sendMessage(chatId, "⚠️ Invalid departure. Please start again.");
+        await bot.sendMessage(
+          chatId,
+          "⚠️ Invalid departure. Please start again."
+        );
         return;
       }
 
       session.departureTime = trip[0];
       session.operator = trip[1];
       session.step = "passenger_name";
+
       sessions.set(chatId, session);
 
-      await bot.sendMessage(chatId, "👤 Please enter the main passenger's full name:");
+      await bot.sendMessage(
+        chatId,
+        "👤 Please enter the **main passenger's full name**:",
+        { parse_mode: "Markdown" }
+      );
       return;
     }
 
@@ -1075,12 +556,16 @@ bot.on("callback_query", async query => {
       const session = sessions.get(chatId);
 
       if (!session || !Number.isInteger(count) || count < 1 || count > 10) {
-        await bot.sendMessage(chatId, "⚠️ Invalid selection. Please start again.");
+        await bot.sendMessage(
+          chatId,
+          "⚠️ Invalid selection. Please start again."
+        );
         return;
       }
 
       session.passengerCount = count;
       session.step = "confirm";
+
       sessions.set(chatId, session);
 
       await showBookingConfirmation(chatId);
@@ -1093,54 +578,59 @@ bot.on("callback_query", async query => {
       return;
     }
 
-    // CANCEL BOOKING SESSION
+    // CANCEL BOOKING
     if (data === "cancel_booking") {
       sessions.delete(chatId);
 
-      await editScreen(
-        chatId,
-        messageId,
+      await bot.editMessageText(
         "❌ Booking cancelled.\n\nYou can start again whenever you're ready.",
-        [
-          [{ text: "🎫 Book Ticket", callback_data: "book" }],
-          [{ text: "🏠 Main Menu", callback_data: "menu" }]
-        ]
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🎫 Book Ticket", callback_data: "book" }],
+              [{ text: "🏠 Main Menu", callback_data: "menu" }]
+            ]
+          }
+        }
       );
-      return;
-    }
-
-    // CUSTOMER CANCELLATION
-    if (data.startsWith("cancel_request_")) {
-      const bookingId = data.replace("cancel_request_", "");
-      await showCustomerCancellation(chatId, messageId, bookingId);
-      return;
-    }
-
-    if (data.startsWith("customer_cancel_")) {
-      const bookingId = data.replace("customer_cancel_", "");
-      await cancelCustomerBooking(chatId, messageId, bookingId);
       return;
     }
 
     // SCHEDULE MENU
     if (data === "schedule") {
-      await editScreen(chatId, messageId,
+      await bot.editMessageText(
         "📋 SPEEDBOAT SCHEDULE\n\nPlease select your route:",
-        [
-          [{ text: "🅰️ Maafushi → Malé", callback_data: "route_maafushi_male" }],
-          [{ text: "🅱️ Malé → Maafushi", callback_data: "route_male_maafushi" }],
-          [{ text: "⭐ Special Ferries", callback_data: "special" }],
-          [{ text: "🔙 Main Menu", callback_data: "menu" }]
-        ]
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🅰️ Maafushi → Malé", callback_data: "route_maafushi_male" }],
+              [{ text: "🅱️ Malé → Maafushi", callback_data: "route_male_maafushi" }],
+              [{ text: "⭐ Special Ferries", callback_data: "special" }],
+              [{ text: "🔙 Main Menu", callback_data: "menu" }]
+            ]
+          }
+        }
       );
       return;
     }
 
     // SCHEDULE DISPLAY
-    if (data === "route_maafushi_male" || data === "route_male_maafushi") {
+    if (
+      data === "route_maafushi_male" ||
+      data === "route_male_maafushi"
+    ) {
       const routeA = data === "route_maafushi_male";
-      const schedule = routeA ? schedules.maafushiMale : schedules.maleMaafushi;
-      const title = routeA ? "🅰️ MAAFUSHI → MALÉ" : "🅱️ MALÉ → MAAFUSHI";
+      const schedule = routeA
+        ? schedules.maafushiMale
+        : schedules.maleMaafushi;
+
+      const title = routeA
+        ? "🅰️ MAAFUSHI → MALÉ"
+        : "🅱️ MALÉ → MAAFUSHI";
 
       let text = `${title}\n\n📋 Daily Schedule\n\n`;
 
@@ -1153,17 +643,22 @@ bot.on("callback_query", async query => {
         callback_data: `trip_${routeA ? "A" : "B"}_${index}`
       }]);
 
-      buttons.push([{ text: "🔙 Back", callback_data: "schedule" }]);
+      buttons.push([{
+        text: "🔙 Back",
+        callback_data: "schedule"
+      }]);
 
-      await editScreen(chatId, messageId, text, buttons);
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: buttons }
+      });
       return;
     }
 
     // SPECIAL FERRIES
     if (data === "special") {
-      await editScreen(
-        chatId,
-        messageId,
+      await bot.editMessageText(
         "⭐ SPECIAL FERRIES\n\n" +
         "🟢 Saturday\n" +
         "22:00 — Maafushi → Malé → Airport\n" +
@@ -1180,7 +675,15 @@ bot.on("callback_query", async query => {
         "Escape\n\n" +
         "06:30 — Malé → Maafushi\n" +
         "Escape",
-        [[{ text: "🔙 Back", callback_data: "schedule" }]]
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔙 Back", callback_data: "schedule" }]
+            ]
+          }
+        }
       );
       return;
     }
@@ -1190,26 +693,36 @@ bot.on("callback_query", async query => {
       const parts = data.split("_");
       const routeA = parts[1] === "A";
       const index = Number(parts[2]);
-      const schedule = routeA ? schedules.maafushiMale : schedules.maleMaafushi;
+
+      const schedule = routeA
+        ? schedules.maafushiMale
+        : schedules.maleMaafushi;
+
       const trip = schedule[index];
 
       if (!trip) return;
 
-      await editScreen(
-        chatId,
-        messageId,
+      await bot.editMessageText(
         "🎫 SELECTED TRIP\n\n" +
         `📍 Route: ${routeA ? "Maafushi → Malé" : "Malé → Maafushi"}\n` +
         `🕐 Departure: ${trip[0]}\n` +
         `🚤 Operator: ${trip[1]}\n\n` +
         "Please use 🎫 Book Ticket to make a booking.",
-        [
-          [{ text: "🎫 Book This Trip", callback_data: "book" }],
-          [{
-            text: "🔙 Back",
-            callback_data: routeA ? "route_maafushi_male" : "route_male_maafushi"
-          }]
-        ]
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🎫 Book This Trip", callback_data: "book" }],
+              [{
+                text: "🔙 Back",
+                callback_data: routeA
+                  ? "route_maafushi_male"
+                  : "route_male_maafushi"
+              }]
+            ]
+          }
+        }
       );
       return;
     }
@@ -1224,59 +737,62 @@ bot.on("callback_query", async query => {
                operator, passenger_count, status
         FROM bookings
         WHERE telegram_user_id = $1
-        AND status <> 'ADMIN_REMOVED'
         ORDER BY created_at DESC
-        LIMIT 20
+        LIMIT 10
         `,
         [chatId]
       );
 
-      if (!result.rows.length) {
-        await editScreen(
-          chatId,
-          messageId,
+      if (result.rows.length === 0) {
+        await bot.editMessageText(
           "🎟️ MY TICKETS\n\nYou don't have any bookings yet.",
-          [
-            [{ text: "🎫 Book Ticket", callback_data: "book" }],
-            [{ text: "🏠 Main Menu", callback_data: "menu" }]
-          ]
+          {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🎫 Book Ticket", callback_data: "book" }],
+                [{ text: "🏠 Main Menu", callback_data: "menu" }]
+              ]
+            }
+          }
         );
         return;
       }
 
       let text = "🎟️ YOUR BOOKINGS\n\n";
-      const buttons = [];
 
-      result.rows.forEach(booking => {
+      result.rows.forEach((booking) => {
+        const date = booking.travel_date instanceof Date
+          ? booking.travel_date.toISOString().split("T")[0]
+          : String(booking.travel_date).split("T")[0];
+
         text +=
           `🎫 ${booking.booking_id}\n` +
           `📍 ${booking.route}\n` +
-          `📅 ${displayDate(getDateValue(booking.travel_date))}\n` +
+          `📅 ${displayDate(date)}\n` +
           `🕐 ${booking.departure_time}\n` +
           `🚤 ${booking.operator}\n` +
           `👥 ${booking.passenger_count}\n` +
           `📌 ${booking.status}\n\n`;
-
-        if (["PENDING_SEAT_CONFIRMATION", "CONFIRMED"].includes(booking.status)) {
-          buttons.push([{
-            text: `❌ Cancel ${booking.booking_id}`,
-            callback_data: `cancel_request_${booking.booking_id}`
-          }]);
-        }
       });
 
-      buttons.push([{ text: "🎫 New Booking", callback_data: "book" }]);
-      buttons.push([{ text: "🏠 Main Menu", callback_data: "menu" }]);
-
-      await editScreen(chatId, messageId, text, buttons);
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🎫 New Booking", callback_data: "book" }],
+            [{ text: "🏠 Main Menu", callback_data: "menu" }]
+          ]
+        }
+      });
       return;
     }
 
     // HELP
     if (data === "help") {
-      await editScreen(
-        chatId,
-        messageId,
+      await bot.editMessageText(
         "ℹ️ MSB AUTOMATIC TICKET\n\n" +
         "🚤 Maldives speedboat booking\n\n" +
         "📋 View schedules\n" +
@@ -1284,28 +800,40 @@ bot.on("callback_query", async query => {
         "🏦 Pay by BML transfer\n" +
         "🎟️ Receive your confirmed ticket\n\n" +
         "Seat availability is confirmed before payment.",
-        [[{ text: "🏠 Main Menu", callback_data: "menu" }]]
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🏠 Main Menu", callback_data: "menu" }]
+            ]
+          }
+        }
       );
       return;
     }
 
   } catch (error) {
-    console.error("Callback error:", error);
+    console.error("Callback error:", error.message);
 
-    await bot.answerCallbackQuery(query.id, {
-      text: "⚠️ Something went wrong. Please try again.",
-      show_alert: true
-    }).catch(() => {});
+    try {
+      await bot.answerCallbackQuery(query.id, {
+        text: "⚠️ Something went wrong. Please try again.",
+        show_alert: true
+      });
+    } catch (_) {}
   }
 });
 
 // ==========================================
-// 18. CUSTOMER TEXT MESSAGE HANDLER
+// 12. CUSTOMER TEXT MESSAGE HANDLER
 // ==========================================
 
-bot.on("message", async msg => {
+bot.on("message", async (msg) => {
   try {
-    if (!msg.text || msg.text.startsWith("/")) return;
+    if (!msg.text || msg.text.startsWith("/")) {
+      return;
+    }
 
     const chatId = msg.chat.id;
     const session = sessions.get(chatId);
@@ -1317,19 +845,24 @@ bot.on("message", async msg => {
       const name = msg.text.trim();
 
       if (name.length < 2 || name.length > 200) {
-        await bot.sendMessage(chatId, "⚠️ Please enter a valid full name.");
+        await bot.sendMessage(
+          chatId,
+          "⚠️ Please enter a valid full name."
+        );
         return;
       }
 
       session.passengerName = name;
       session.step = "phone";
+
       sessions.set(chatId, session);
 
       await bot.sendMessage(
         chatId,
-        "📱 Please enter the main passenger's phone number.\n\n" +
+        "📱 Please enter the **main passenger's phone number**.\n\n" +
         "International numbers are accepted.\n\n" +
-        "Example: +960 7XXXXXX"
+        "Example: +960 7XXXXXX",
+        { parse_mode: "Markdown" }
       );
       return;
     }
@@ -1340,12 +873,16 @@ bot.on("message", async msg => {
       const cleanedPhone = phone.replace(/[^\d+]/g, "");
 
       if (cleanedPhone.length < 7 || cleanedPhone.length > 20) {
-        await bot.sendMessage(chatId, "⚠️ Please enter a valid phone number.");
+        await bot.sendMessage(
+          chatId,
+          "⚠️ Please enter a valid phone number."
+        );
         return;
       }
 
       session.phone = phone;
       session.step = "passenger_count";
+
       sessions.set(chatId, session);
 
       const buttons = [];
@@ -1380,16 +917,17 @@ bot.on("message", async msg => {
     }
 
   } catch (error) {
-    console.error("Message handler error:", error);
+    console.error("Message handler error:", error.message);
   }
 });
 
 // ==========================================
-// 19. BOOKING CONFIRMATION
+// 13. BOOKING CONFIRMATION SCREEN
 // ==========================================
 
 async function showBookingConfirmation(chatId) {
   const session = sessions.get(chatId);
+
   if (!session) return;
 
   const text =
@@ -1407,36 +945,62 @@ async function showBookingConfirmation(chatId) {
   await bot.sendMessage(chatId, text, {
     reply_markup: {
       inline_keyboard: [
-        [{ text: "✅ Submit Booking Request", callback_data: "confirm_booking" }],
-        [{ text: "❌ Cancel", callback_data: "cancel_booking" }]
+        [{
+          text: "✅ Submit Booking Request",
+          callback_data: "confirm_booking"
+        }],
+        [{
+          text: "❌ Cancel",
+          callback_data: "cancel_booking"
+        }]
       ]
     }
   });
 }
 
 // ==========================================
-// 20. CREATE BOOKING
+// 14. CREATE BOOKING - FIXED NOTIFICATIONS
 // ==========================================
 
 async function createBooking(chatId) {
   const session = sessions.get(chatId);
 
   if (!session || session.step !== "confirm") {
-    await bot.sendMessage(chatId, "⚠️ Your booking session expired. Please start again.");
+    await bot.sendMessage(
+      chatId,
+      "⚠️ Your booking session expired. Please start again."
+    );
     return;
   }
+
+  // Prevent duplicate submissions
+  if (submittingBookings.has(chatId)) {
+    return;
+  }
+
+  submittingBookings.add(chatId);
+
+  let bookingId;
 
   try {
     await databaseReady;
 
-    const bookingId = generateBookingId();
+    bookingId = generateBookingId();
 
+    // 1. SAVE BOOKING TO DATABASE
     await pool.query(
       `
       INSERT INTO bookings (
-        booking_id, telegram_user_id, route, travel_date,
-        departure_time, operator, passenger_name, phone,
-        passenger_count, status
+        booking_id,
+        telegram_user_id,
+        route,
+        travel_date,
+        departure_time,
+        operator,
+        passenger_name,
+        phone,
+        passenger_count,
+        status
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       `,
@@ -1454,6 +1018,73 @@ async function createBooking(chatId) {
       ]
     );
 
+    console.log(`✅ Booking saved: ${bookingId}`);
+
+  } catch (error) {
+    console.error("❌ DATABASE BOOKING ERROR:", error.message);
+
+    sessions.delete(chatId);
+
+    try {
+      await bot.sendMessage(
+        chatId,
+        "❌ We couldn't save your booking request.\n\nPlease contact our booking team."
+      );
+    } catch (messageError) {
+      console.error("Customer error message failed:", messageError.message);
+    }
+
+    submittingBookings.delete(chatId);
+    return;
+  }
+
+  // 2. SEND ADMIN NOTIFICATION FIRST
+  let adminNotificationSent = false;
+
+  try {
+    await bot.sendMessage(
+      ADMIN_ID,
+      "🚨 NEW BOOKING REQUEST\n\n" +
+      `🎫 Booking ID: ${bookingId}\n` +
+      `📍 Route: ${session.route}\n` +
+      `📅 Date: ${displayDate(session.travelDate)}\n` +
+      `🕐 Departure: ${session.departureTime}\n` +
+      `🚤 Operator: ${session.operator}\n` +
+      `👤 Passenger: ${session.passengerName}\n` +
+      `📱 Phone: ${session.phone}\n` +
+      `👥 Passengers: ${session.passengerCount}\n\n` +
+      "⏳ ACTION REQUIRED\n" +
+      "Please check seat availability.",
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "✅ CONFIRM",
+                callback_data: `admin_confirm_${bookingId}`
+              },
+              {
+                text: "❌ REJECT",
+                callback_data: `admin_reject_${bookingId}`
+              }
+            ]
+          ]
+        }
+      }
+    );
+
+    adminNotificationSent = true;
+    console.log(`✅ ADMIN NOTIFICATION SENT: ${bookingId}`);
+
+  } catch (adminError) {
+    console.error(
+      `❌ ADMIN NOTIFICATION FAILED for ${bookingId}:`,
+      adminError.message
+    );
+  }
+
+  // 3. SEND CUSTOMER RECEIPT SEPARATELY
+  try {
     await bot.sendMessage(
       chatId,
       "✅ BOOKING REQUEST RECEIVED\n\n" +
@@ -1467,101 +1098,40 @@ async function createBooking(chatId) {
       "Please wait while our booking team confirms the seats."
     );
 
-    await bot.sendMessage(
-      ADMIN_ID,
-      "🚨 NEW BOOKING REQUEST\n\n" +
-      `🎫 Booking ID: ${bookingId}\n` +
-      `🆔 Customer ID: ${chatId}\n` +
-      `📍 Route: ${session.route}\n` +
-      `📅 Date: ${displayDate(session.travelDate)}\n` +
-      `🕐 Departure: ${session.departureTime}\n` +
-      `🚤 Operator: ${session.operator}\n` +
-      `👤 Passenger: ${session.passengerName}\n` +
-      `📱 Phone: ${session.phone}\n` +
-      `👥 Passengers: ${session.passengerCount}\n\n` +
-      "⏳ ACTION REQUIRED\nPlease check seat availability.",
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: "✅ CONFIRM",
-              callback_data: `admin_confirm_${bookingId}`
-            },
-            {
-              text: "❌ REJECT",
-              callback_data: `admin_reject_${bookingId}`
-            }
-          ]]
-        }
-      }
-    );
+    console.log(`✅ CUSTOMER RECEIPT SENT: ${bookingId}`);
 
-    sessions.delete(chatId);
-
-  } catch (error) {
-    console.error("❌ Booking creation error:", error);
-
-    await bot.sendMessage(
-      chatId,
-      "❌ Sorry, we couldn't complete your booking request right now.\n\nPlease try again later."
+  } catch (customerError) {
+    console.error(
+      `⚠️ CUSTOMER NOTIFICATION FAILED for ${bookingId}:`,
+      customerError.message
     );
   }
+
+  // 4. IF ADMIN MESSAGE FAILED, LOG CLEARLY
+  if (!adminNotificationSent) {
+    console.error(
+      `🚨 ACTION REQUIRED: Admin did not receive booking ${bookingId}. Check ADMIN_TELEGRAM_ID and Telegram access.`
+    );
+  }
+
+  // 5. CLEAR SESSION
+  sessions.delete(chatId);
+  submittingBookings.delete(chatId);
 }
 
 // ==========================================
-// 21. ADMIN COMMAND
+// 15. ERROR HANDLERS
 // ==========================================
 
-bot.onText(/^\/admin$/, async msg => {
-  if (!isAdmin(msg.from.id, msg.chat.id)) {
-    await bot.sendMessage(msg.chat.id, "⛔ Admin access only.");
-    return;
-  }
-
-  try {
-    await databaseReady;
-
-    const keyboard = [
-      [{ text: "⚙️ Open Admin Dashboard", callback_data: "admin_dashboard" }]
-    ];
-
-    await bot.sendMessage(
-      msg.chat.id,
-      "⚙️ MSB ADMIN PANEL\n\nWelcome, administrator.",
-      { reply_markup: { inline_keyboard: keyboard } }
-    );
-  } catch (error) {
-    console.error("Admin command error:", error);
-    await bot.sendMessage(msg.chat.id, "❌ Unable to open admin panel.");
-  }
-});
-
-// ==========================================
-// 22. START COMMAND
-// ==========================================
-
-bot.onText(/^\/start$/, async msg => {
-  try {
-    sessions.delete(msg.chat.id);
-    await showMainMenu(msg.chat.id);
-  } catch (error) {
-    console.error("Start error:", error);
-  }
-});
-
-// ==========================================
-// 23. ERROR HANDLERS
-// ==========================================
-
-bot.on("polling_error", error => {
+bot.on("polling_error", (error) => {
   console.error("Telegram polling error:", error.message);
 });
 
-bot.on("error", error => {
+bot.on("error", (error) => {
   console.error("Telegram bot error:", error.message);
 });
 
-pool.on("error", error => {
+pool.on("error", (error) => {
   console.error("PostgreSQL pool error:", error.message);
 });
 
