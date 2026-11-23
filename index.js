@@ -6,9 +6,16 @@ const { Pool } = require("pg");
 // ENVIRONMENT VARIABLES
 // ===============================
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_ID = process.env.ADMIN_TELEGRAM_ID;
-const DATABASE_URL = process.env.DATABASE_URL;
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim();
+const ADMIN_ID = process.env.ADMIN_TELEGRAM_ID?.trim();
+const DATABASE_URL = process.env.DATABASE_URL?.trim();
+
+// Diagnostic check (does not reveal secret values)
+console.log("========== ENVIRONMENT CHECK ==========");
+console.log("TELEGRAM_BOT_TOKEN:", TOKEN ? "FOUND" : "MISSING");
+console.log("ADMIN_TELEGRAM_ID:", ADMIN_ID ? "FOUND" : "MISSING");
+console.log("DATABASE_URL:", DATABASE_URL ? "FOUND" : "MISSING");
+console.log("=======================================");
 
 if (!TOKEN) {
   console.error("❌ TELEGRAM_BOT_TOKEN is missing");
@@ -24,6 +31,7 @@ if (!DATABASE_URL) {
   console.error("❌ DATABASE_URL is missing");
   process.exit(1);
 }
+
 
 // ===============================
 // TELEGRAM BOT
