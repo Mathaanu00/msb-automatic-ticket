@@ -140,7 +140,6 @@ const schedules = {
 // ==========================================
 
 const sessions = new Map();
-const submittingBookings = new Set();
 
 function generateBookingId() {
   return `MSB-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -246,21 +245,25 @@ bot.onText(/^\/start$/, async (msg) => {
 // ==========================================
 
 async function handleAdminDecision(query, approved) {
-  const adminChatId = query.message?.chat?.id;
+  const adminChatId = query.message.chat.id;
 
+  // Verify admin identity
   if (String(query.from.id) !== String(ADMIN_ID)) {
     await bot.answerCallbackQuery(query.id, {
       text: "⛔ You are not authorized!",
       show_alert: true
     });
+
     return;
   }
 
+  // Ensure the action came from the configured admin chat
   if (String(adminChatId) !== String(ADMIN_ID)) {
     await bot.answerCallbackQuery(query.id, {
       text: "⛔ Invalid admin chat!",
       show_alert: true
     });
+
     return;
   }
 
@@ -272,19 +275,16 @@ async function handleAdminDecision(query, approved) {
       text: "Invalid booking ID!",
       show_alert: true
     });
+
     return;
   }
-
-  // Answer Telegram immediately
-  await bot.answerCallbackQuery(query.id, {
-    text: "Processing booking..."
-  });
 
   try {
     await databaseReady;
 
     const newStatus = approved ? "CONFIRMED" : "REJECTED";
 
+    // Only pending bookings can be processed
     const result = await pool.query(
       `
       UPDATE bookings
@@ -297,37 +297,32 @@ async function handleAdminDecision(query, approved) {
     );
 
     if (result.rows.length === 0) {
-      await bot.sendMessage(
-        ADMIN_ID,
-        `⚠️ Booking ${bookingId} was already processed or could not be found.`
-      );
+      await bot.answerCallbackQuery(query.id, {
+        text: "⚠️ Already processed or booking not found!",
+        show_alert: true
+      });
+
       return;
     }
 
     const booking = result.rows[0];
 
-    // Remove CONFIRM and REJECT buttons
-    try {
-      await bot.editMessageReplyMarkup(
-        { inline_keyboard: [] },
-        {
-          chat_id: adminChatId,
-          message_id: query.message.message_id
-        }
-      );
-    } catch (error) {
-      console.error("Button removal error:", error.message);
-    }
-
-    // Notify admin
-    await bot.sendMessage(
-      ADMIN_ID,
-      approved
-        ? `✅ Booking ${bookingId} has been CONFIRMED.`
-        : `❌ Booking ${bookingId} has been REJECTED.`
+    // Remove the action buttons
+    await bot.editMessageReplyMarkup(
+      { inline_keyboard: [] },
+      {
+        chat_id: adminChatId,
+        message_id: query.message.message_id
+      }
     );
 
-    // Notify customer separately
+    await bot.answerCallbackQuery(query.id, {
+      text: approved
+        ? "✅ Booking confirmed!"
+        : "❌ Booking rejected!"
+    });
+
+    // Notify customer
     const customerMessage = approved
       ? (
           "✅ BOOKING CONFIRMED!\n\n" +
@@ -349,25 +344,30 @@ async function handleAdminDecision(query, approved) {
       );
     } catch (notificationError) {
       console.error(
-        "Customer decision notification error:",
+        "Customer notification error:",
         notificationError.message
       );
 
       await bot.sendMessage(
         ADMIN_ID,
-        `⚠️ Booking ${bookingId} was updated, but the customer could not be notified.`
+        `⚠️ Booking ${bookingId} was updated, but the customer notification failed.`
       );
     }
+
+    await bot.sendMessage(
+      ADMIN_ID,
+      approved
+        ? `✅ Booking ${bookingId} has been CONFIRMED.`
+        : `❌ Booking ${bookingId} has been REJECTED.`
+    );
 
   } catch (error) {
     console.error("Admin decision error:", error.message);
 
-    try {
-      await bot.sendMessage(
-        ADMIN_ID,
-        `❌ Could not process booking ${bookingId}: ${error.message}`
-      );
-    } catch (_) {}
+    await bot.answerCallbackQuery(query.id, {
+      text: "❌ Unable to update booking!",
+      show_alert: true
+    });
   }
 }
 
@@ -377,11 +377,11 @@ async function handleAdminDecision(query, approved) {
 
 bot.on("callback_query", async (query) => {
   try {
-    const chatId = query.message?.chat?.id;
-    const messageId = query.message?.message_id;
-    const data = query.data || "";
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const data = query.data;
 
-    // ADMIN ACTIONS
+    // Admin actions must be handled before normal callbacks
     if (data.startsWith("admin_confirm_")) {
       await handleAdminDecision(query, true);
       return;
@@ -389,11 +389,6 @@ bot.on("callback_query", async (query) => {
 
     if (data.startsWith("admin_reject_")) {
       await handleAdminDecision(query, false);
-      return;
-    }
-
-    if (!chatId || !messageId) {
-      await bot.answerCallbackQuery(query.id);
       return;
     }
 
@@ -424,6 +419,7 @@ bot.on("callback_query", async (query) => {
           }
         }
       );
+
       return;
     }
 
@@ -461,6 +457,7 @@ bot.on("callback_query", async (query) => {
           reply_markup: { inline_keyboard: buttons }
         }
       );
+
       return;
     }
 
@@ -470,10 +467,7 @@ bot.on("callback_query", async (query) => {
       const session = sessions.get(chatId);
 
       if (!session) {
-        await bot.sendMessage(
-          chatId,
-          "⚠️ Your booking session expired. Please start again with /start."
-        );
+        await bot.sendMessage(chatId, "⚠️ Your booking session expired. Please start again with /start.");
         return;
       }
 
@@ -506,6 +500,7 @@ bot.on("callback_query", async (query) => {
           reply_markup: { inline_keyboard: buttons }
         }
       );
+
       return;
     }
 
@@ -515,10 +510,7 @@ bot.on("callback_query", async (query) => {
       const session = sessions.get(chatId);
 
       if (!session) {
-        await bot.sendMessage(
-          chatId,
-          "⚠️ Your booking session expired. Please start again."
-        );
+        await bot.sendMessage(chatId, "⚠️ Your booking session expired. Please start again.");
         return;
       }
 
@@ -529,10 +521,7 @@ bot.on("callback_query", async (query) => {
       const trip = schedule[index];
 
       if (!trip) {
-        await bot.sendMessage(
-          chatId,
-          "⚠️ Invalid departure. Please start again."
-        );
+        await bot.sendMessage(chatId, "⚠️ Invalid departure. Please start again.");
         return;
       }
 
@@ -547,6 +536,7 @@ bot.on("callback_query", async (query) => {
         "👤 Please enter the **main passenger's full name**:",
         { parse_mode: "Markdown" }
       );
+
       return;
     }
 
@@ -556,10 +546,7 @@ bot.on("callback_query", async (query) => {
       const session = sessions.get(chatId);
 
       if (!session || !Number.isInteger(count) || count < 1 || count > 10) {
-        await bot.sendMessage(
-          chatId,
-          "⚠️ Invalid selection. Please start again."
-        );
+        await bot.sendMessage(chatId, "⚠️ Invalid selection. Please start again.");
         return;
       }
 
@@ -595,6 +582,7 @@ bot.on("callback_query", async (query) => {
           }
         }
       );
+
       return;
     }
 
@@ -615,6 +603,7 @@ bot.on("callback_query", async (query) => {
           }
         }
       );
+
       return;
     }
 
@@ -653,6 +642,7 @@ bot.on("callback_query", async (query) => {
         message_id: messageId,
         reply_markup: { inline_keyboard: buttons }
       });
+
       return;
     }
 
@@ -685,6 +675,7 @@ bot.on("callback_query", async (query) => {
           }
         }
       );
+
       return;
     }
 
@@ -724,6 +715,7 @@ bot.on("callback_query", async (query) => {
           }
         }
       );
+
       return;
     }
 
@@ -757,6 +749,7 @@ bot.on("callback_query", async (query) => {
             }
           }
         );
+
         return;
       }
 
@@ -787,6 +780,7 @@ bot.on("callback_query", async (query) => {
           ]
         }
       });
+
       return;
     }
 
@@ -810,6 +804,7 @@ bot.on("callback_query", async (query) => {
           }
         }
       );
+
       return;
     }
 
@@ -845,10 +840,7 @@ bot.on("message", async (msg) => {
       const name = msg.text.trim();
 
       if (name.length < 2 || name.length > 200) {
-        await bot.sendMessage(
-          chatId,
-          "⚠️ Please enter a valid full name."
-        );
+        await bot.sendMessage(chatId, "⚠️ Please enter a valid full name.");
         return;
       }
 
@@ -864,6 +856,7 @@ bot.on("message", async (msg) => {
         "Example: +960 7XXXXXX",
         { parse_mode: "Markdown" }
       );
+
       return;
     }
 
@@ -873,10 +866,7 @@ bot.on("message", async (msg) => {
       const cleanedPhone = phone.replace(/[^\d+]/g, "");
 
       if (cleanedPhone.length < 7 || cleanedPhone.length > 20) {
-        await bot.sendMessage(
-          chatId,
-          "⚠️ Please enter a valid phone number."
-        );
+        await bot.sendMessage(chatId, "⚠️ Please enter a valid phone number.");
         return;
       }
 
@@ -888,10 +878,7 @@ bot.on("message", async (msg) => {
       const buttons = [];
 
       for (let i = 1; i <= 10; i += 2) {
-        const row = [{
-          text: `👥 ${i}`,
-          callback_data: `passengers_${i}`
-        }];
+        const row = [{ text: `👥 ${i}`, callback_data: `passengers_${i}` }];
 
         if (i + 1 <= 10) {
           row.push({
@@ -913,6 +900,7 @@ bot.on("message", async (msg) => {
         "👥 How many passengers?\n\nMaximum: 10 passengers",
         { reply_markup: { inline_keyboard: buttons } }
       );
+
       return;
     }
 
@@ -945,21 +933,15 @@ async function showBookingConfirmation(chatId) {
   await bot.sendMessage(chatId, text, {
     reply_markup: {
       inline_keyboard: [
-        [{
-          text: "✅ Submit Booking Request",
-          callback_data: "confirm_booking"
-        }],
-        [{
-          text: "❌ Cancel",
-          callback_data: "cancel_booking"
-        }]
+        [{ text: "✅ Submit Booking Request", callback_data: "confirm_booking" }],
+        [{ text: "❌ Cancel", callback_data: "cancel_booking" }]
       ]
     }
   });
 }
 
 // ==========================================
-// 14. CREATE BOOKING - FIXED NOTIFICATIONS
+// 14. CREATE BOOKING
 // ==========================================
 
 async function createBooking(chatId) {
@@ -970,24 +952,15 @@ async function createBooking(chatId) {
       chatId,
       "⚠️ Your booking session expired. Please start again."
     );
+
     return;
   }
-
-  // Prevent duplicate submissions
-  if (submittingBookings.has(chatId)) {
-    return;
-  }
-
-  submittingBookings.add(chatId);
-
-  let bookingId;
 
   try {
     await databaseReady;
 
-    bookingId = generateBookingId();
+    const bookingId = generateBookingId();
 
-    // 1. SAVE BOOKING TO DATABASE
     await pool.query(
       `
       INSERT INTO bookings (
@@ -1018,33 +991,25 @@ async function createBooking(chatId) {
       ]
     );
 
-    console.log(`✅ Booking saved: ${bookingId}`);
+    // CUSTOMER RECEIPT
+    await bot.sendMessage(
+      chatId,
+      "✅ **BOOKING REQUEST RECEIVED**\n\n" +
+      `🎫 Booking ID: ${bookingId}\n\n` +
+      `📍 ${session.route}\n` +
+      `📅 ${displayDate(session.travelDate)}\n` +
+      `🕐 ${session.departureTime}\n` +
+      `🚤 ${session.operator}\n` +
+      `👥 ${session.passengerCount} passenger(s)\n\n` +
+      "⏳ **Status: Waiting for seat confirmation**\n\n" +
+      "Please wait while our booking team confirms the seats.",
+      { parse_mode: "Markdown" }
+    );
 
-  } catch (error) {
-    console.error("❌ DATABASE BOOKING ERROR:", error.message);
-
-    sessions.delete(chatId);
-
-    try {
-      await bot.sendMessage(
-        chatId,
-        "❌ We couldn't save your booking request.\n\nPlease contact our booking team."
-      );
-    } catch (messageError) {
-      console.error("Customer error message failed:", messageError.message);
-    }
-
-    submittingBookings.delete(chatId);
-    return;
-  }
-
-  // 2. SEND ADMIN NOTIFICATION FIRST
-  let adminNotificationSent = false;
-
-  try {
+    // ADMIN NOTIFICATION WITH APPROVAL BUTTONS
     await bot.sendMessage(
       ADMIN_ID,
-      "🚨 NEW BOOKING REQUEST\n\n" +
+      "🚨 **NEW BOOKING REQUEST**\n\n" +
       `🎫 Booking ID: ${bookingId}\n` +
       `📍 Route: ${session.route}\n` +
       `📅 Date: ${displayDate(session.travelDate)}\n` +
@@ -1053,9 +1018,10 @@ async function createBooking(chatId) {
       `👤 Passenger: ${session.passengerName}\n` +
       `📱 Phone: ${session.phone}\n` +
       `👥 Passengers: ${session.passengerCount}\n\n` +
-      "⏳ ACTION REQUIRED\n" +
+      "⏳ **ACTION REQUIRED**\n" +
       "Please check seat availability.",
       {
+        parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
             [
@@ -1073,50 +1039,16 @@ async function createBooking(chatId) {
       }
     );
 
-    adminNotificationSent = true;
-    console.log(`✅ ADMIN NOTIFICATION SENT: ${bookingId}`);
+    sessions.delete(chatId);
 
-  } catch (adminError) {
-    console.error(
-      `❌ ADMIN NOTIFICATION FAILED for ${bookingId}:`,
-      adminError.message
-    );
-  }
+  } catch (error) {
+    console.error("❌ Booking creation error:", error.message);
 
-  // 3. SEND CUSTOMER RECEIPT SEPARATELY
-  try {
     await bot.sendMessage(
       chatId,
-      "✅ BOOKING REQUEST RECEIVED\n\n" +
-      `🎫 Booking ID: ${bookingId}\n\n` +
-      `📍 ${session.route}\n` +
-      `📅 ${displayDate(session.travelDate)}\n` +
-      `🕐 ${session.departureTime}\n` +
-      `🚤 ${session.operator}\n` +
-      `👥 ${session.passengerCount} passenger(s)\n\n` +
-      "⏳ Status: Waiting for seat confirmation\n\n" +
-      "Please wait while our booking team confirms the seats."
-    );
-
-    console.log(`✅ CUSTOMER RECEIPT SENT: ${bookingId}`);
-
-  } catch (customerError) {
-    console.error(
-      `⚠️ CUSTOMER NOTIFICATION FAILED for ${bookingId}:`,
-      customerError.message
+      "❌ Sorry, we couldn't complete your booking request right now.\n\nPlease try again later."
     );
   }
-
-  // 4. IF ADMIN MESSAGE FAILED, LOG CLEARLY
-  if (!adminNotificationSent) {
-    console.error(
-      `🚨 ACTION REQUIRED: Admin did not receive booking ${bookingId}. Check ADMIN_TELEGRAM_ID and Telegram access.`
-    );
-  }
-
-  // 5. CLEAR SESSION
-  sessions.delete(chatId);
-  submittingBookings.delete(chatId);
 }
 
 // ==========================================
