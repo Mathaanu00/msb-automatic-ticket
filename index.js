@@ -1,49 +1,37 @@
+
 const http = require("http");
 const TelegramBot = require("node-telegram-bot-api");
 const { Pool } = require("pg");
 
-// ===============================
-// ENVIRONMENT VARIABLES
-// ===============================
+// ==========================================
+// 1. ENVIRONMENT VARIABLES
+// ==========================================
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim();
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_TELEGRAM_ID?.trim();
-const DATABASE_URL = process.env.DATABASE_URL?.trim();
+const DATABASE_URL = process.env.DATABASE_URL;
 
-// Diagnostic check (does not reveal secret values)
-console.log("========== ENVIRONMENT CHECK ==========");
-console.log("TELEGRAM_BOT_TOKEN:", TOKEN ? "FOUND" : "MISSING");
-console.log("ADMIN_TELEGRAM_ID:", ADMIN_ID ? "FOUND" : "MISSING");
-console.log("DATABASE_URL:", DATABASE_URL ? "FOUND" : "MISSING");
-console.log("=======================================");
+if (!TOKEN || !ADMIN_ID || !DATABASE_URL) {
+  console.error("❌ Missing environment variables.");
 
-if (!TOKEN) {
-  console.error("❌ TELEGRAM_BOT_TOKEN is missing");
+  if (!TOKEN) console.error("TELEGRAM_BOT_TOKEN is missing");
+  if (!ADMIN_ID) console.error("ADMIN_TELEGRAM_ID is missing");
+  if (!DATABASE_URL) console.error("DATABASE_URL is missing");
+
   process.exit(1);
 }
 
-if (!ADMIN_ID) {
-  console.error("❌ ADMIN_TELEGRAM_ID is missing");
-  process.exit(1);
-}
-
-if (!DATABASE_URL) {
-  console.error("❌ DATABASE_URL is missing");
-  process.exit(1);
-}
-
-
-// ===============================
-// TELEGRAM BOT
-// ===============================
+// ==========================================
+// 2. TELEGRAM BOT
+// ==========================================
 
 const bot = new TelegramBot(TOKEN, {
   polling: true
 });
 
-// ===============================
-// DATABASE
-// ===============================
+// ==========================================
+// 3. DATABASE
+// ==========================================
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -52,58 +40,51 @@ const pool = new Pool({
   }
 });
 
-// ===============================
-// CREATE BOOKINGS TABLE
-// ===============================
-
 async function initializeDatabase() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS bookings (
-        id SERIAL PRIMARY KEY,
-        booking_id VARCHAR(30) UNIQUE NOT NULL,
-        telegram_user_id BIGINT NOT NULL,
-        route VARCHAR(100) NOT NULL,
-        travel_date DATE NOT NULL,
-        departure_time VARCHAR(10) NOT NULL,
-        operator VARCHAR(100) NOT NULL,
-        passenger_name VARCHAR(200) NOT NULL,
-        phone VARCHAR(50) NOT NULL,
-        passenger_count INTEGER NOT NULL,
-        status VARCHAR(50) NOT NULL DEFAULT 'PENDING_SEAT_CONFIRMATION',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bookings (
+      id SERIAL PRIMARY KEY,
+      booking_id VARCHAR(30) UNIQUE NOT NULL,
+      telegram_user_id BIGINT NOT NULL,
+      route VARCHAR(100) NOT NULL,
+      travel_date DATE NOT NULL,
+      departure_time VARCHAR(10) NOT NULL,
+      operator VARCHAR(100) NOT NULL,
+      passenger_name VARCHAR(200) NOT NULL,
+      phone VARCHAR(50) NOT NULL,
+      passenger_count INTEGER NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'PENDING_SEAT_CONFIRMATION',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
-    console.log("✅ Database initialized");
-  } catch (error) {
-    console.error("❌ Database error:", error.message);
-  }
+  console.log("✅ Database initialized");
 }
 
-initializeDatabase();
+const databaseReady = initializeDatabase().catch((error) => {
+  console.error("❌ Database initialization failed:", error.message);
+  process.exit(1);
+});
 
-// ===============================
-// WEB SERVER FOR RENDER
-// ===============================
+// ==========================================
+// 4. RENDER WEB SERVER
+// ==========================================
 
 const PORT = process.env.PORT || 3000;
 
-http
-  .createServer((req, res) => {
-    res.writeHead(200, {
-      "Content-Type": "text/plain"
-    });
-
-    res.end("🚤 MSB Automatic Ticket is running!");
-  })
-  .listen(PORT, () => {
-    console.log(`🌐 Server running on port ${PORT}`);
+http.createServer((req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/plain"
   });
 
-// ===============================
-// SCHEDULES
-// ===============================
+  res.end("🚤 MSB Automatic Ticket is running!");
+}).listen(PORT, () => {
+  console.log(`🌐 Server running on port ${PORT}`);
+});
+
+// ==========================================
+// 5. SPEEDBOAT SCHEDULES
+// ==========================================
 
 const schedules = {
   maafushiMale: [
@@ -154,27 +135,26 @@ const schedules = {
   ]
 };
 
-// ===============================
-// TEMPORARY BOOKING SESSIONS
-// ===============================
+// ==========================================
+// 6. BOOKING SESSIONS
+// ==========================================
 
 const sessions = new Map();
 
-// ===============================
-// BOOKING ID
-// ===============================
-
 function generateBookingId() {
-  const random = Math.floor(100000 + Math.random() * 900000);
-  return `MSB-${random}`;
+  return `MSB-${Math.floor(100000 + Math.random() * 900000)}`;
 }
 
-// ===============================
-// DATE FUNCTIONS
-// ===============================
+// ==========================================
+// 7. DATE FUNCTIONS
+// ==========================================
 
 function formatDate(date) {
-  return date.toISOString().split("T")[0];
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
 }
 
 function displayDate(dateString) {
@@ -190,37 +170,34 @@ function displayDate(dateString) {
 
 function generateDates() {
   const dates = [];
-
   const today = new Date();
 
   for (let i = 0; i < 30; i++) {
     const date = new Date(today);
-
     date.setDate(today.getDate() + i);
+
+    let label;
+
+    if (i === 0) {
+      label = `📅 Today — ${date.getDate()} ${date.toLocaleString("en", { month: "short" })}`;
+    } else if (i === 1) {
+      label = `📅 Tomorrow — ${date.getDate()} ${date.toLocaleString("en", { month: "short" })}`;
+    } else {
+      label = `📅 ${date.getDate()} ${date.toLocaleString("en", { month: "short" })}`;
+    }
 
     dates.push({
       value: formatDate(date),
-      label:
-        i === 0
-          ? `📅 Today — ${date.getDate()} ${date.toLocaleString("en", {
-              month: "short"
-            })}`
-          : i === 1
-          ? `📅 Tomorrow — ${date.getDate()} ${date.toLocaleString("en", {
-              month: "short"
-            })}`
-          : `📅 ${date.getDate()} ${date.toLocaleString("en", {
-              month: "short"
-            })}`
+      label
     });
   }
 
   return dates;
 }
 
-// ===============================
-// MAIN MENU
-// ===============================
+// ==========================================
+// 8. MAIN MENU
+// ==========================================
 
 async function showMainMenu(chatId, messageId = null) {
   const text =
@@ -231,30 +208,10 @@ async function showMainMenu(chatId, messageId = null) {
   const options = {
     reply_markup: {
       inline_keyboard: [
-        [
-          {
-            text: "🎫 Book Ticket",
-            callback_data: "book"
-          }
-        ],
-        [
-          {
-            text: "📋 Schedule",
-            callback_data: "schedule"
-          }
-        ],
-        [
-          {
-            text: "🎟️ My Tickets",
-            callback_data: "tickets"
-          }
-        ],
-        [
-          {
-            text: "ℹ️ Help",
-            callback_data: "help"
-          }
-        ]
+        [{ text: "🎫 Book Ticket", callback_data: "book" }],
+        [{ text: "📋 Schedule", callback_data: "schedule" }],
+        [{ text: "🎟️ My Tickets", callback_data: "tickets" }],
+        [{ text: "ℹ️ Help", callback_data: "help" }]
       ]
     }
   };
@@ -270,484 +227,429 @@ async function showMainMenu(chatId, messageId = null) {
   }
 }
 
-// ===============================
-// START
-// ===============================
+// ==========================================
+// 9. START COMMAND
+// ==========================================
 
 bot.onText(/^\/start$/, async (msg) => {
-  sessions.delete(msg.chat.id);
-
-  await showMainMenu(msg.chat.id);
+  try {
+    sessions.delete(msg.chat.id);
+    await showMainMenu(msg.chat.id);
+  } catch (error) {
+    console.error("Start error:", error.message);
+  }
 });
 
-// ===============================
-// CALLBACK HANDLER
-// ===============================
+// ==========================================
+// 10. ADMIN APPROVAL SYSTEM
+// ==========================================
 
-bot.on("callback_query", async (query) => {
-  const chatId = query.message.chat.id;
-  const messageId = query.message.message_id;
-  const data = query.data;
+async function handleAdminDecision(query, approved) {
+  const adminChatId = query.message.chat.id;
 
-  await bot.answerCallbackQuery(query.id);
-
-  // =============================
-  // MAIN MENU
-
-// =============================
-
-  if (data === "menu") {
-    sessions.delete(chatId);
-
-    await showMainMenu(chatId, messageId);
-
-    return;
-  }
-
-  // =============================
-  // BOOKING START
-  // =============================
-
-  if (data === "book") {
-    sessions.set(chatId, {
-      step: "route"
+  // Verify admin identity
+  if (String(query.from.id) !== String(ADMIN_ID)) {
+    await bot.answerCallbackQuery(query.id, {
+      text: "⛔ You are not authorized!",
+      show_alert: true
     });
 
-    await bot.editMessageText(
-      "🎫 BOOK A SPEEDBOAT TICKET\n\n" +
-        "Select your route:",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "🅰️ Maafushi → Malé",
-                callback_data: "book_route_A"
-              }
-            ],
-            [
-              {
-                text: "🅱️ Malé → Maafushi",
-                callback_data: "book_route_B"
-              }
-            ],
-            [
-              {
-                text: "🔙 Main Menu",
-                callback_data: "menu"
-              }
-            ]
-          ]
-        }
-      }
-    );
+    return;
+  }
+
+  // Ensure the action came from the configured admin chat
+  if (String(adminChatId) !== String(ADMIN_ID)) {
+    await bot.answerCallbackQuery(query.id, {
+      text: "⛔ Invalid admin chat!",
+      show_alert: true
+    });
 
     return;
   }
 
-  // =============================
-  // BOOKING ROUTE A
-  // =============================
+  const prefix = approved ? "admin_confirm_" : "admin_reject_";
+  const bookingId = query.data.slice(prefix.length);
 
-  if (data === "book_route_A") {
-    const session = sessions.get(chatId) || {};
-
-    session.route = "Maafushi → Malé";
-    session.routeCode = "A";
-    session.step = "date";
-
-    sessions.set(chatId, session);
-
-    const dates = generateDates();
-
-    const buttons = dates.map((date) => [
-      {
-        text: date.label,
-        callback_data: `book_date_${date.value}`
-      }
-    ]);
-
-    buttons.push([
-      {
-        text: "🔙 Back",
-        callback_data: "book"
-      }
-    ]);
-
-    await bot.editMessageText(
-      "🅰️ MAAFUSHI → MALÉ\n\n" +
-        "📅 Select your travel date:",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: buttons
-        }
-      }
-    );
+  if (!bookingId) {
+    await bot.answerCallbackQuery(query.id, {
+      text: "Invalid booking ID!",
+      show_alert: true
+    });
 
     return;
   }
 
-  // =============================
-  // BOOKING ROUTE B
-  // =============================
+  try {
+    await databaseReady;
 
-  if (data === "book_route_B") {
-    const session = sessions.get(chatId) || {};
+    const newStatus = approved ? "CONFIRMED" : "REJECTED";
 
-    session.route = "Malé → Maafushi";
-    session.routeCode = "B";
-    session.step = "date";
-
-    sessions.set(chatId, session);
-
-    const dates = generateDates();
-
-    const buttons = dates.map((date) => [
-      {
-        text: date.label,
-        callback_data: `book_date_${date.value}`
-      }
-    ]);
-
-    buttons.push([
-      {
-        text: "🔙 Back",
-        callback_data: "book"
-      }
-    ]);
-
-    await bot.editMessageText(
-      "🅱️ MALÉ → MAAFUSHI\n\n" +
-        "📅 Select your travel date:",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: buttons
-        }
-      }
+    // Only pending bookings can be processed
+    const result = await pool.query(
+      `
+      UPDATE bookings
+      SET status = $1
+      WHERE booking_id = $2
+      AND status = 'PENDING_SEAT_CONFIRMATION'
+      RETURNING booking_id, telegram_user_id
+      `,
+      [newStatus, bookingId]
     );
 
-    return;
-  }
-
-  // =============================
-  // DATE SELECTION
-  // =============================
-
-  if (data.startsWith("book_date_")) {
-    const selectedDate = data.replace("book_date_", "");
-
-    const session = sessions.get(chatId);
-
-    if (!session) {
-      await bot.sendMessage(
-        chatId,
-        "⚠️ Your booking session expired. Please start again with /start."
-      );
+    if (result.rows.length === 0) {
+      await bot.answerCallbackQuery(query.id, {
+        text: "⚠️ Already processed or booking not found!",
+        show_alert: true
+      });
 
       return;
     }
 
-    session.travelDate = selectedDate;
-    session.step = "departure";
+    const booking = result.rows[0];
 
-    sessions.set(chatId, session);
-
-    const schedule =
-      session.routeCode === "A"
-        ? schedules.maafushiMale
-        : schedules.maleMaafushi;
-
-    const buttons = schedule.map((trip, index) => [
+    // Remove the action buttons
+    await bot.editMessageReplyMarkup(
+      { inline_keyboard: [] },
       {
-        text: `🕐 ${trip[0]} — ${trip[1]}`,
-        callback_data: `book_trip_${index}`
-      }
-    ]);
-
-    buttons.push([
-      {
-        text: "🔙 Back",
-        callback_data:
-          session.routeCode === "A"
-            ? "book_route_A"
-            : "book_route_B"
-      }
-    ]);
-
-    await bot.editMessageText(
-      `📅 ${displayDate(selectedDate)}\n\n` +
-        "🕐 Select your departure:",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: buttons
-        }
+        chat_id: adminChatId,
+        message_id: query.message.message_id
       }
     );
 
-    return;
-  }
+    await bot.answerCallbackQuery(query.id, {
+      text: approved
+        ? "✅ Booking confirmed!"
+        : "❌ Booking rejected!"
+    });
 
-  // =============================
-  // TRIP SELECTION
-  // =============================
+    // Notify customer
+    const customerMessage = approved
+      ? (
+          "✅ BOOKING CONFIRMED!\n\n" +
+          `🎫 Booking ID: ${bookingId}\n\n` +
+          "Your seats have been confirmed.\n\n" +
+          "Thank you for choosing MSB! 🚤"
+        )
+      : (
+          "❌ BOOKING REJECTED\n\n" +
+          `🎫 Booking ID: ${bookingId}\n\n` +
+          "Unfortunately, your booking could not be confirmed.\n\n" +
+          "Please contact our booking team for assistance."
+        );
 
-  if (data.startsWith("book_trip_")) {
-    const index = Number(data.replace("book_trip_", ""));
-
-    const session = sessions.get(chatId);
-
-    if (!session) {
+    try {
       await bot.sendMessage(
-        chatId,
-        "⚠️ Your booking session expired. Please start again with /start."
+        booking.telegram_user_id,
+        customerMessage
+      );
+    } catch (notificationError) {
+      console.error(
+        "Customer notification error:",
+        notificationError.message
       );
 
-      return;
-    }
-
-    const schedule =
-      session.routeCode === "A"
-        ? schedules.maafushiMale
-        : schedules.maleMaafushi;
-
-    const trip = schedule[index];
-
-    if (!trip) {
       await bot.sendMessage(
-        chatId,
-        "⚠️ Invalid departure. Please start again."
+        ADMIN_ID,
+        `⚠️ Booking ${bookingId} was updated, but the customer notification failed.`
       );
-
-      return;
     }
-
-    session.departureTime = trip[0];
-    session.operator = trip[1];
-    session.step = "passenger_name";
-
-    sessions.set(chatId, session);
 
     await bot.sendMessage(
-      chatId,
-      "👤 Please enter the **main passenger's full name**:",
-      {
-        parse_mode: "Markdown"
-      }
+      ADMIN_ID,
+      approved
+        ? `✅ Booking ${bookingId} has been CONFIRMED.`
+        : `❌ Booking ${bookingId} has been REJECTED.`
     );
 
-    return;
+  } catch (error) {
+    console.error("Admin decision error:", error.message);
+
+    await bot.answerCallbackQuery(query.id, {
+      text: "❌ Unable to update booking!",
+      show_alert: true
+    });
   }
+}
 
-  // =============================
-  // PASSENGER COUNT
-  // =============================
+// ==========================================
+// 11. CALLBACK HANDLER
+// ==========================================
 
-  if (data.startsWith("passengers_")) {
-    const count = Number(data.replace("passengers_", ""));
+bot.on("callback_query", async (query) => {
+  try {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const data = query.data;
 
-    const session = sessions.get(chatId);
+    // Admin actions must be handled before normal callbacks
+    if (data.startsWith("admin_confirm_")) {
+      await handleAdminDecision(query, true);
+      return;
+    }
 
-    if (!session) {
-      await bot.sendMessage(
-        chatId,
-        "⚠️ Your booking session expired. Please start again."
+    if (data.startsWith("admin_reject_")) {
+      await handleAdminDecision(query, false);
+      return;
+    }
+
+    await bot.answerCallbackQuery(query.id);
+
+    // MAIN MENU
+    if (data === "menu") {
+      sessions.delete(chatId);
+      await showMainMenu(chatId, messageId);
+      return;
+    }
+
+    // BOOKING START
+    if (data === "book") {
+      sessions.set(chatId, { step: "route" });
+
+      await bot.editMessageText(
+        "🎫 BOOK A SPEEDBOAT TICKET\n\nSelect your route:",
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🅰️ Maafushi → Malé", callback_data: "book_route_A" }],
+              [{ text: "🅱️ Malé → Maafushi", callback_data: "book_route_B" }],
+              [{ text: "🔙 Main Menu", callback_data: "menu" }]
+            ]
+          }
+        }
       );
 
       return;
     }
 
-    session.passengerCount = count;
-    session.step = "confirm";
+    // ROUTE A AND B
+    if (data === "book_route_A" || data === "book_route_B") {
+      const routeA = data === "book_route_A";
+      const session = sessions.get(chatId) || {};
 
-    sessions.set(chatId, session);
+      session.route = routeA
+        ? "Maafushi → Malé"
+        : "Malé → Maafushi";
 
-    await showBookingConfirmation(chatId);
+      session.routeCode = routeA ? "A" : "B";
+      session.step = "date";
 
-    return;
-  }
+      sessions.set(chatId, session);
 
-  // =============================
-  // CONFIRM BOOKING
-  // =============================
+      const dates = generateDates();
 
-  if (data === "confirm_booking") {
-    await createBooking(chatId);
+      const buttons = dates.map((date) => [{
+        text: date.label,
+        callback_data: `book_date_${date.value}`
+      }]);
 
-    return;
-  }
+      buttons.push([{
+        text: "🔙 Back",
+        callback_data: "book"
+      }]);
 
-  // =============================
-  // CANCEL BOOKING
-  // =============================
-
-  if (data === "cancel_booking") {
-    sessions.delete(chatId);
-
-    await bot.editMessageText(
-      "❌ Booking cancelled.\n\n" +
-        "You can start again whenever you're ready.",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "🎫 Book Ticket",
-                callback_data: "book"
-              }
-            ],
-            [
-              {
-                text: "🏠 Main Menu",
-                callback_data: "menu"
-              }
-            ]
-          ]
+      await bot.editMessageText(
+        `${routeA ? "🅰️ MAAFUSHI → MALÉ" : "🅱️ MALÉ → MAAFUSHI"}\n\n📅 Select your travel date:`,
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: buttons }
         }
+      );
+
+      return;
+    }
+
+    // DATE SELECTION
+    if (data.startsWith("book_date_")) {
+      const selectedDate = data.replace("book_date_", "");
+      const session = sessions.get(chatId);
+
+      if (!session) {
+        await bot.sendMessage(chatId, "⚠️ Your booking session expired. Please start again with /start.");
+        return;
       }
-    );
 
-    return;
-  }
+      session.travelDate = selectedDate;
+      session.step = "departure";
 
-  // =============================
-  // SCHEDULE
-  // =============================
+      sessions.set(chatId, session);
 
-  if (data === "schedule") {
-    await bot.editMessageText(
-      "📋 SPEEDBOAT SCHEDULE\n\n" +
-        "Please select your route:",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "🅰️ Maafushi → Malé",
-                callback_data: "route_maafushi_male"
-              }
-            ],
-            [
+      const schedule = session.routeCode === "A"
+        ? schedules.maafushiMale
+        : schedules.maleMaafushi;
 
-{
-                text: "🅱️ Malé → Maafushi",
-                callback_data: "route_male_maafushi"
-              }
-            ],
-            [
-              {
-                text: "⭐ Special Ferries",
-                callback_data: "special"
-              }
-            ],
-            [
-              {
-                text: "🔙 Main Menu",
-                callback_data: "menu"
-              }
-            ]
-          ]
-        }
-      }
-    );
-
-    return;
-  }
-
-  // =============================
-  // SCHEDULE A
-  // =============================
-
-  if (data === "route_maafushi_male") {
-    let text =
-      "🅰️ MAAFUSHI → MALÉ\n\n" +
-      "📋 Daily Schedule\n\n";
-
-    schedules.maafushiMale.forEach((trip, index) => {
-      text += `${index + 1}. 🕐 ${trip[0]} — 🚤 ${trip[1]}\n`;
-    });
-
-    const buttons = schedules.maafushiMale.map((trip, index) => [
-      {
+      const buttons = schedule.map((trip, index) => [{
         text: `🕐 ${trip[0]} — ${trip[1]}`,
-        callback_data: `trip_A_${index}`
-      }
-    ]);
+        callback_data: `book_trip_${index}`
+      }]);
 
-    buttons.push([
-      {
+      buttons.push([{
+        text: "🔙 Back",
+        callback_data: session.routeCode === "A"
+          ? "book_route_A"
+          : "book_route_B"
+      }]);
+
+      await bot.editMessageText(
+        `📅 ${displayDate(selectedDate)}\n\n🕐 Select your departure:`,
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: buttons }
+        }
+      );
+
+      return;
+    }
+
+    // TRIP SELECTION
+    if (data.startsWith("book_trip_")) {
+      const index = Number(data.replace("book_trip_", ""));
+      const session = sessions.get(chatId);
+
+      if (!session) {
+        await bot.sendMessage(chatId, "⚠️ Your booking session expired. Please start again.");
+        return;
+      }
+
+      const schedule = session.routeCode === "A"
+        ? schedules.maafushiMale
+        : schedules.maleMaafushi;
+
+      const trip = schedule[index];
+
+      if (!trip) {
+        await bot.sendMessage(chatId, "⚠️ Invalid departure. Please start again.");
+        return;
+      }
+
+      session.departureTime = trip[0];
+      session.operator = trip[1];
+      session.step = "passenger_name";
+
+      sessions.set(chatId, session);
+
+      await bot.sendMessage(
+        chatId,
+        "👤 Please enter the **main passenger's full name**:",
+        { parse_mode: "Markdown" }
+      );
+
+      return;
+    }
+
+    // PASSENGER COUNT
+    if (data.startsWith("passengers_")) {
+      const count = Number(data.replace("passengers_", ""));
+      const session = sessions.get(chatId);
+
+      if (!session || !Number.isInteger(count) || count < 1 || count > 10) {
+        await bot.sendMessage(chatId, "⚠️ Invalid selection. Please start again.");
+        return;
+      }
+
+      session.passengerCount = count;
+      session.step = "confirm";
+
+      sessions.set(chatId, session);
+
+      await showBookingConfirmation(chatId);
+      return;
+    }
+
+    // SUBMIT BOOKING
+    if (data === "confirm_booking") {
+      await createBooking(chatId);
+      return;
+    }
+
+    // CANCEL BOOKING
+    if (data === "cancel_booking") {
+      sessions.delete(chatId);
+
+      await bot.editMessageText(
+        "❌ Booking cancelled.\n\nYou can start again whenever you're ready.",
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🎫 Book Ticket", callback_data: "book" }],
+              [{ text: "🏠 Main Menu", callback_data: "menu" }]
+            ]
+          }
+        }
+      );
+
+      return;
+    }
+
+    // SCHEDULE MENU
+    if (data === "schedule") {
+      await bot.editMessageText(
+        "📋 SPEEDBOAT SCHEDULE\n\nPlease select your route:",
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🅰️ Maafushi → Malé", callback_data: "route_maafushi_male" }],
+              [{ text: "🅱️ Malé → Maafushi", callback_data: "route_male_maafushi" }],
+              [{ text: "⭐ Special Ferries", callback_data: "special" }],
+              [{ text: "🔙 Main Menu", callback_data: "menu" }]
+            ]
+          }
+        }
+      );
+
+      return;
+    }
+
+    // SCHEDULE DISPLAY
+    if (
+      data === "route_maafushi_male" ||
+      data === "route_male_maafushi"
+    ) {
+      const routeA = data === "route_maafushi_male";
+      const schedule = routeA
+        ? schedules.maafushiMale
+        : schedules.maleMaafushi;
+
+      const title = routeA
+        ? "🅰️ MAAFUSHI → MALÉ"
+        : "🅱️ MALÉ → MAAFUSHI";
+
+      let text = `${title}\n\n📋 Daily Schedule\n\n`;
+
+      schedule.forEach((trip, index) => {
+        text += `${index + 1}. 🕐 ${trip[0]} — 🚤 ${trip[1]}\n`;
+      });
+
+      const buttons = schedule.map((trip, index) => [{
+        text: `🕐 ${trip[0]} — ${trip[1]}`,
+        callback_data: `trip_${routeA ? "A" : "B"}_${index}`
+      }]);
+
+      buttons.push([{
         text: "🔙 Back",
         callback_data: "schedule"
-      }
-    ]);
+      }]);
 
-    await bot.editMessageText(text, {
-      chat_id: chatId,
-      message_id: messageId,
-      reply_markup: {
-        inline_keyboard: buttons
-      }
-    });
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: buttons }
+      });
 
-    return;
-  }
+      return;
+    }
 
-  // =============================
-  // SCHEDULE B
-  // =============================
-
-  if (data === "route_male_maafushi") {
-    let text =
-      "🅱️ MALÉ → MAAFUSHI\n\n" +
-      "📋 Daily Schedule\n\n";
-
-    schedules.maleMaafushi.forEach((trip, index) => {
-      text += `${index + 1}. 🕐 ${trip[0]} — 🚤 ${trip[1]}\n`;
-    });
-
-    const buttons = schedules.maleMaafushi.map((trip, index) => [
-      {
-        text: `🕐 ${trip[0]} — ${trip[1]}`,
-        callback_data: `trip_B_${index}`
-      }
-    ]);
-
-    buttons.push([
-      {
-        text: "🔙 Back",
-        callback_data: "schedule"
-      }
-    ]);
-
-    await bot.editMessageText(text, {
-      chat_id: chatId,
-      message_id: messageId,
-      reply_markup: {
-        inline_keyboard: buttons
-      }
-    });
-
-    return;
-  }
-
-  // =============================
-  // SPECIAL FERRIES
-  // =============================
-
-  if (data === "special") {
-    await bot.editMessageText(
-      "⭐ SPECIAL FERRIES\n\n" +
+    // SPECIAL FERRIES
+    if (data === "special") {
+      await bot.editMessageText(
+        "⭐ SPECIAL FERRIES\n\n" +
         "🟢 Saturday\n" +
         "22:00 — Maafushi → Malé → Airport\n" +
         "Real Tours\n\n" +
@@ -763,137 +665,12 @@ bot.on("callback_query", async (query) => {
         "Escape\n\n" +
         "06:30 — Malé → Maafushi\n" +
         "Escape",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "🔙 Back",
-                callback_data: "schedule"
-              }
-            ]
-          ]
-        }
-      }
-    );
-
-    return;
-  }
-
-  // =============================
-  // TRIP DISPLAY
-  // =============================
-
-  if (data.startsWith("trip_A_")) {
-    const index = Number(data.split("_")[2]);
-    const trip = schedules.maafushiMale[index];
-
-    await bot.editMessageText(
-      "🎫 SELECTED TRIP\n\n" +
-        "📍 Route: Maafushi → Malé\n" +
-        `🕐 Departure: ${trip[0]}\n` +
-        `🚤 Operator: ${trip[1]}\n\n` +
-        "Please use 🎫 Book Ticket to make a booking.",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "🎫 Book This Trip",
-                callback_data: "book"
-              }
-            ],
-            [
-              {
-                text: "🔙 Back",
-                callback_data: "route_maafushi_male"
-              }
-            ]
-          ]
-        }
-      }
-    );
-
-    return;
-  }
-
-  if (data.startsWith("trip_B_")) {
-    const index = Number(data.split("_")[2]);
-    const trip = schedules.maleMaafushi[index];
-
-    await bot.editMessageText(
-      "🎫 SELECTED TRIP\n\n" +
-        "📍 Route: Malé → Maafushi\n" +
-        `🕐 Departure: ${trip[0]}\n` +
-        `🚤 Operator: ${trip[1]}\n\n` +
-        "Please use 🎫 Book Ticket to make a booking.",
-      {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: "🎫 Book This Trip",
-                callback_data: "book"
-              }
-            ],
-            [
-              {
-                text: "🔙 Back",
-                callback_data: "route_male_maafushi"
-              }
-            ]
-          ]
-        }
-      }
-    );
-
-    return;
-  }
-
-  // =============================
-  // MY TICKETS
-  // =============================
-
-  if (data === "tickets") {
-    const result = await pool.query(
-      `
-      SELECT booking_id, route, travel_date, departure_time,
-             operator, passenger_count, status
-      FROM bookings
-      WHERE telegram_user_id = $1
-      ORDER BY created_at DESC
-      LIMIT 10
-      `,
-      [chatId]
-    );
-
-    if (result.rows.length === 0) {
-      await bot.editMessageText(
-        "🎟️ MY TICKETS\n\n" +
-          "You don't have any bookings yet.",
         {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: {
             inline_keyboard: [
-              [
-                {
-                  text: "🎫 Book Ticket",
-                  callback_data: "book"
-                }
-              ],
-              [
-                {
-                  text: "🏠 Main Menu",
-                  callback_data: "menu"
-                }
-              ]
+              [{ text: "🔙 Back", callback_data: "schedule" }]
             ]
           }
         }
@@ -902,204 +679,244 @@ bot.on("callback_query", async (query) => {
       return;
     }
 
-    let text = "🎟️ YOUR BOOKINGS\n\n";
+    // TRIP DETAILS
+    if (data.startsWith("trip_A_") || data.startsWith("trip_B_")) {
+      const parts = data.split("_");
+      const routeA = parts[1] === "A";
+      const index = Number(parts[2]);
 
-    result.rows.forEach((booking) => {
-      text +=
-        `🎫 ${booking.booking_id}\n` +
-        `📍 ${booking.route}\n` +
-        `📅 ${displayDate(
-          booking.travel_date.toISOString().split("T")[0]
-        )}\n` +
-        `🕐 ${booking.departure_time}\n` +
-        `🚤 ${booking.operator}\n` +
-        `👥 ${booking.passenger_count}\n` +
-        `📌 ${booking.status}\n\n`;
-    });
+      const schedule = routeA
+        ? schedules.maafushiMale
+        : schedules.maleMaafushi;
 
-    await bot.editMessageText(text, {
-      chat_id: chatId,
-      message_id: messageId,
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "🎫 New Booking",
-              callback_data: "book"
+      const trip = schedule[index];
+
+      if (!trip) return;
+
+      await bot.editMessageText(
+        "🎫 SELECTED TRIP\n\n" +
+        `📍 Route: ${routeA ? "Maafushi → Malé" : "Malé → Maafushi"}\n` +
+        `🕐 Departure: ${trip[0]}\n` +
+        `🚤 Operator: ${trip[1]}\n\n` +
+        "Please use 🎫 Book Ticket to make a booking.",
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🎫 Book This Trip", callback_data: "book" }],
+              [{
+                text: "🔙 Back",
+                callback_data: routeA
+                  ? "route_maafushi_male"
+                  : "route_male_maafushi"
+              }]
+            ]
+          }
+        }
+      );
+
+      return;
+    }
+
+    // MY TICKETS
+    if (data === "tickets") {
+      await databaseReady;
+
+      const result = await pool.query(
+        `
+        SELECT booking_id, route, travel_date, departure_time,
+               operator, passenger_count, status
+        FROM bookings
+        WHERE telegram_user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 10
+        `,
+        [chatId]
+      );
+
+      if (result.rows.length === 0) {
+        await bot.editMessageText(
+          "🎟️ MY TICKETS\n\nYou don't have any bookings yet.",
+          {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🎫 Book Ticket", callback_data: "book" }],
+                [{ text: "🏠 Main Menu", callback_data: "menu" }]
+              ]
             }
-          ],
-          [
-            {
-              text: "🏠 Main Menu",
-              callback_data: "menu"
-            }
-          ]
-        ]
+          }
+        );
+
+        return;
       }
-    });
 
-    return;
-  }
+      let text = "🎟️ YOUR BOOKINGS\n\n";
 
-  // =============================
-  // HELP
-  // =============================
+      result.rows.forEach((booking) => {
+        const date = booking.travel_date instanceof Date
+          ? booking.travel_date.toISOString().split("T")[0]
+          : String(booking.travel_date).split("T")[0];
 
-  if (data === "help") {
-    await bot.editMessageText(
-      "ℹ️ MSB AUTOMATIC TICKET\n\n" +
-        "🚤 Maldives speedboat booking\n\n" +
-        "📋 View schedules\n" +
+        text +=
+          `🎫 ${booking.booking_id}\n` +
+          `📍 ${booking.route}\n` +
+          `📅 ${displayDate(date)}\n` +
+          `🕐 ${booking.departure_time}\n` +
+          `🚤 ${booking.operator}\n` +
+          `👥 ${booking.passenger_count}\n` +
+          `📌 ${booking.status}\n\n`;
+      });
 
-"🎫 Request a ticket\n" +
-        "🏦 Pay by BML transfer\n" +
-        "🎟️ Receive your confirmed ticket\n\n" +
-        "Seat availability is confirmed before payment.",
-      {
+      await bot.editMessageText(text, {
         chat_id: chatId,
         message_id: messageId,
         reply_markup: {
           inline_keyboard: [
-            [
-              {
-                text: "🏠 Main Menu",
-                callback_data: "menu"
-              }
-            ]
+            [{ text: "🎫 New Booking", callback_data: "book" }],
+            [{ text: "🏠 Main Menu", callback_data: "menu" }]
           ]
         }
-      }
-    );
-
-    return;
-  }
-});
-
-// ===============================
-// TEXT MESSAGE HANDLER
-// ===============================
-
-bot.on("message", async (msg) => {
-  if (!msg.text || msg.text.startsWith("/")) {
-    return;
-  }
-
-  const chatId = msg.chat.id;
-  const session = sessions.get(chatId);
-
-  if (!session) {
-    return;
-  }
-
-  // =============================
-  // PASSENGER NAME
-  // =============================
-
-  if (session.step === "passenger_name") {
-    const name = msg.text.trim();
-
-    if (name.length < 2 || name.length > 200) {
-      await bot.sendMessage(
-        chatId,
-        "⚠️ Please enter a valid full name."
-      );
-
-      return;
-    }
-
-    session.passengerName = name;
-    session.step = "phone";
-
-    sessions.set(chatId, session);
-
-    await bot.sendMessage(
-      chatId,
-      "📱 Please enter the **main passenger's phone number**.\n\n" +
-        "International numbers are accepted.\n\n" +
-        "Example: +960 7XXXXXX",
-      {
-        parse_mode: "Markdown"
-      }
-    );
-
-    return;
-  }
-
-  // =============================
-  // PHONE
-  // =============================
-
-  if (session.step === "phone") {
-    const phone = msg.text.trim();
-
-    const cleanedPhone = phone.replace(/[^\d+]/g, "");
-
-    if (cleanedPhone.length < 7 || cleanedPhone.length > 20) {
-      await bot.sendMessage(
-        chatId,
-        "⚠️ Please enter a valid phone number."
-      );
-
-      return;
-    }
-
-    session.phone = phone;
-    session.step = "passenger_count";
-
-    sessions.set(chatId, session);
-
-    const buttons = [];
-
-    for (let i = 1; i <= 10; i += 2) {
-      const row = [];
-
-      row.push({
-        text: `👥 ${i}`,
-        callback_data: `passengers_${i}`
       });
 
-      if (i + 1 <= 10) {
-        row.push({
-          text: `👥 ${i + 1}`,
-          callback_data: `passengers_${i + 1}`
-        });
-      }
-
-      buttons.push(row);
+      return;
     }
 
-    buttons.push([
-      {
-        text: "❌ Cancel",
-        callback_data: "cancel_booking"
-      }
-    ]);
-
-    await bot.sendMessage(
-      chatId,
-      "👥 How many passengers?\n\n" +
-        "Maximum: 10 passengers",
-      {
-        reply_markup: {
-          inline_keyboard: buttons
+    // HELP
+    if (data === "help") {
+      await bot.editMessageText(
+        "ℹ️ MSB AUTOMATIC TICKET\n\n" +
+        "🚤 Maldives speedboat booking\n\n" +
+        "📋 View schedules\n" +
+        "🎫 Request a ticket\n" +
+        "🏦 Pay by BML transfer\n" +
+        "🎟️ Receive your confirmed ticket\n\n" +
+        "Seat availability is confirmed before payment.",
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🏠 Main Menu", callback_data: "menu" }]
+            ]
+          }
         }
-      }
-    );
+      );
 
-    return;
+      return;
+    }
+
+  } catch (error) {
+    console.error("Callback error:", error.message);
+
+    try {
+      await bot.answerCallbackQuery(query.id, {
+        text: "⚠️ Something went wrong. Please try again.",
+        show_alert: true
+      });
+    } catch (_) {}
   }
 });
 
-// ===============================
-// BOOKING CONFIRMATION SCREEN
-// ===============================
+// ==========================================
+// 12. CUSTOMER TEXT MESSAGE HANDLER
+// ==========================================
+
+bot.on("message", async (msg) => {
+  try {
+    if (!msg.text || msg.text.startsWith("/")) {
+      return;
+    }
+
+    const chatId = msg.chat.id;
+    const session = sessions.get(chatId);
+
+    if (!session) return;
+
+    // PASSENGER NAME
+    if (session.step === "passenger_name") {
+      const name = msg.text.trim();
+
+      if (name.length < 2 || name.length > 200) {
+        await bot.sendMessage(chatId, "⚠️ Please enter a valid full name.");
+        return;
+      }
+
+      session.passengerName = name;
+      session.step = "phone";
+
+      sessions.set(chatId, session);
+
+      await bot.sendMessage(
+        chatId,
+        "📱 Please enter the **main passenger's phone number**.\n\n" +
+        "International numbers are accepted.\n\n" +
+        "Example: +960 7XXXXXX",
+        { parse_mode: "Markdown" }
+      );
+
+      return;
+    }
+
+    // PHONE NUMBER
+    if (session.step === "phone") {
+      const phone = msg.text.trim();
+      const cleanedPhone = phone.replace(/[^\d+]/g, "");
+
+      if (cleanedPhone.length < 7 || cleanedPhone.length > 20) {
+        await bot.sendMessage(chatId, "⚠️ Please enter a valid phone number.");
+        return;
+      }
+
+      session.phone = phone;
+      session.step = "passenger_count";
+
+      sessions.set(chatId, session);
+
+      const buttons = [];
+
+      for (let i = 1; i <= 10; i += 2) {
+        const row = [{ text: `👥 ${i}`, callback_data: `passengers_${i}` }];
+
+        if (i + 1 <= 10) {
+          row.push({
+            text: `👥 ${i + 1}`,
+            callback_data: `passengers_${i + 1}`
+          });
+        }
+
+        buttons.push(row);
+      }
+
+      buttons.push([{
+        text: "❌ Cancel",
+        callback_data: "cancel_booking"
+      }]);
+
+      await bot.sendMessage(
+        chatId,
+        "👥 How many passengers?\n\nMaximum: 10 passengers",
+        { reply_markup: { inline_keyboard: buttons } }
+      );
+
+      return;
+    }
+
+  } catch (error) {
+    console.error("Message handler error:", error.message);
+  }
+});
+
+// ==========================================
+// 13. BOOKING CONFIRMATION SCREEN
+// ==========================================
 
 async function showBookingConfirmation(chatId) {
   const session = sessions.get(chatId);
 
-  if (!session) {
-    return;
-  }
+  if (!session) return;
 
   const text =
     "🔎 PLEASE CHECK YOUR BOOKING\n\n" +
@@ -1116,31 +933,21 @@ async function showBookingConfirmation(chatId) {
   await bot.sendMessage(chatId, text, {
     reply_markup: {
       inline_keyboard: [
-        [
-          {
-            text: "✅ Submit Booking Request",
-            callback_data: "confirm_booking"
-          }
-        ],
-        [
-          {
-            text: "❌ Cancel",
-            callback_data: "cancel_booking"
-          }
-        ]
+        [{ text: "✅ Submit Booking Request", callback_data: "confirm_booking" }],
+        [{ text: "❌ Cancel", callback_data: "cancel_booking" }]
       ]
     }
   });
 }
 
-// ===============================
-// CREATE BOOKING
-// ===============================
+// ==========================================
+// 14. CREATE BOOKING
+// ==========================================
 
 async function createBooking(chatId) {
   const session = sessions.get(chatId);
 
-  if (!session) {
+  if (!session || session.step !== "confirm") {
     await bot.sendMessage(
       chatId,
       "⚠️ Your booking session expired. Please start again."
@@ -1149,9 +956,11 @@ async function createBooking(chatId) {
     return;
   }
 
-  const bookingId = generateBookingId();
-
   try {
+    await databaseReady;
+
+    const bookingId = generateBookingId();
+
     await pool.query(
       `
       INSERT INTO bookings (
@@ -1182,41 +991,51 @@ async function createBooking(chatId) {
       ]
     );
 
+    // CUSTOMER RECEIPT
     await bot.sendMessage(
       chatId,
       "✅ **BOOKING REQUEST RECEIVED**\n\n" +
-        `🎫 Booking ID: ${bookingId}\n\n` +
-        `📍 ${session.route}\n` +
-        `📅 ${displayDate(session.travelDate)}\n` +
-        `🕐 ${session.departureTime}\n` +
-        `🚤 ${session.operator}\n` +
-        `👥 ${session.passengerCount} passenger(s)\n\n` +
-        "⏳ **Status: Waiting for seat confirmation**\n\n" +
-        "Please wait while our booking team confirms the seats.",
-      {
-        parse_mode: "Markdown"
-      }
+      `🎫 Booking ID: ${bookingId}\n\n` +
+      `📍 ${session.route}\n` +
+      `📅 ${displayDate(session.travelDate)}\n` +
+      `🕐 ${session.departureTime}\n` +
+      `🚤 ${session.operator}\n` +
+      `👥 ${session.passengerCount} passenger(s)\n\n` +
+      "⏳ **Status: Waiting for seat confirmation**\n\n" +
+      "Please wait while our booking team confirms the seats.",
+      { parse_mode: "Markdown" }
     );
 
-    // =============================
-    // SEND TO ADMIN
-    // =============================
-
+    // ADMIN NOTIFICATION WITH APPROVAL BUTTONS
     await bot.sendMessage(
       ADMIN_ID,
       "🚨 **NEW BOOKING REQUEST**\n\n" +
-        `🎫 Booking ID: ${bookingId}\n` +
-        `📍 Route: ${session.route}\n` +
-        `📅 Date: ${displayDate(session.travelDate)}\n` +
-        `🕐 Departure: ${session.departureTime}\n` +
-        `🚤 Operator: ${session.operator}\n` +
-        `👤 Passenger: ${session.passengerName}\n` +
-        `📱 Phone: ${session.phone}\n` +
-        `👥 Passengers: ${session.passengerCount}\n\n` +
-        "⏳ **ACTION REQUIRED**\n" +
-        "Please contact the operator and confirm seat availability.",
+      `🎫 Booking ID: ${bookingId}\n` +
+      `📍 Route: ${session.route}\n` +
+      `📅 Date: ${displayDate(session.travelDate)}\n` +
+      `🕐 Departure: ${session.departureTime}\n` +
+      `🚤 Operator: ${session.operator}\n` +
+      `👤 Passenger: ${session.passengerName}\n` +
+      `📱 Phone: ${session.phone}\n` +
+      `👥 Passengers: ${session.passengerCount}\n\n` +
+      "⏳ **ACTION REQUIRED**\n" +
+      "Please check seat availability.",
       {
-        parse_mode: "Markdown"
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "✅ CONFIRM",
+                callback_data: `admin_confirm_${bookingId}`
+              },
+              {
+                text: "❌ REJECT",
+                callback_data: `admin_reject_${bookingId}`
+              }
+            ]
+          ]
+        }
       }
     );
 
@@ -1227,21 +1046,25 @@ async function createBooking(chatId) {
 
     await bot.sendMessage(
       chatId,
-      "❌ Sorry, we couldn't create your booking right now.\n\n" +
-        "Please try again later."
+      "❌ Sorry, we couldn't complete your booking request right now.\n\nPlease try again later."
     );
   }
 }
 
-// ===============================
-// POLLING ERROR
-// ===============================
+// ==========================================
+// 15. ERROR HANDLERS
+// ==========================================
 
 bot.on("polling_error", (error) => {
-  console.error(
-    "Telegram polling error:",
-    error.message
-  );
+  console.error("Telegram polling error:", error.message);
+});
+
+bot.on("error", (error) => {
+  console.error("Telegram bot error:", error.message);
+});
+
+pool.on("error", (error) => {
+  console.error("PostgreSQL pool error:", error.message);
 });
 
 console.log("🚤 MSB Automatic Ticket is starting...");
